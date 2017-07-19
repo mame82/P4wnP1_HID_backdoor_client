@@ -17,6 +17,7 @@ namespace P4wnP1
         public Encodings encoding { get; }
         public Types type { get; }
         public UInt32 ID { get; }
+        public bool isLinked { get; set; } //Channel is known on python side, if this isn't be true; data sent could be ignored by the other end
 
 
         protected Queue in_queue = null;
@@ -31,6 +32,7 @@ namespace P4wnP1
             next_id++;
             this.encoding = encoding;
             this.type = type;
+            this.isLinked = false;
 
             // if IN channel or BIDIRECTIONAL channel, generate inbound queue
             if (this.type != Types.OUT) this.in_queue = Queue.Synchronized(new Queue());

@@ -166,6 +166,54 @@ namespace P4wnP1
             }
         }
 
+        /*
+         * ChannelAddRequest
+         *      0..3    UInt32  Channel ID
+         *      4       byte    Channel Class (0 = unspecified, 1 = ProcessChannel, ...)
+         *      5       byte    Channel Type (0 = unspecified, 1 = BIDIRECTIONAL, 2 = OUT, 3 = IN) Note: channel type has to be reversed on other endpoit IN becomes OUT, OUT becomes in
+         *      6       byte    Channel Encoding (0 = unspecified, 1 = BYTEARRAY, 2 = UTF8)
+         *      7..10   UInt32  Channel parent ID (0= unspecified, in case of process channel process ID)
+         *      11..14  UInt32  Channel subtype  (in case of process: 0=STDIN, 1=STDOUT, 2=STDERR)
+         */
+        /*
+        private void sendChannelAddRequest(Channel ch)
+        {
+
+            if (ch is ProcessChannel)
+            {
+                ProcessChannel p_ch = (ProcessChannel)ch;
+
+                List<byte> chAddRequest = Struct.packUInt32(p_ch.ID);
+
+                chAddRequest = Struct.packByte(1, chAddRequest);
+
+                if (p_ch.type == Channel.Types.BIDIRECTIONAL) chAddRequest = Struct.packByte(1, chAddRequest);
+                else if (p_ch.type == Channel.Types.IN) chAddRequest = Struct.packByte(2, chAddRequest); //set to out on other end
+                else if (p_ch.type == Channel.Types.OUT) chAddRequest = Struct.packByte(3, chAddRequest); //set to in on other end
+                else chAddRequest = Struct.packByte(0, chAddRequest); //unspecified
+
+                if (p_ch.encoding == Channel.Encodings.BYTEARRAY) chAddRequest = Struct.packByte(1, chAddRequest); //set to BYTEARRAY encoding
+                else if (p_ch.encoding == Channel.Encodings.UTF8) chAddRequest = Struct.packByte(2, chAddRequest); //set to UTF-8 encoding
+                else chAddRequest = Struct.packByte(0, chAddRequest); //set to unspecified encoding
+
+                
+
+            }
+            else
+            {
+                Console.WriteLine("undefined channel");
+            }
+
+        }
+        */
+
+        private byte[] core_inform_channel_added(byte[] args)
+        {
+            UInt32 ch_id = Struct.extractUInt32(new List<byte>(args));
+            ((Channel)this.tl.GetChannel(ch_id)).isLinked = true;
+            return Struct.packNullTerminatedString(String.Format("Channel with ID {0} set to 'hasLink'", ch_id)).ToArray();
+        }
+
         private byte[] core_create_proc(byte[] args)
         {
             List<byte> data = new List<byte>(args);
@@ -175,7 +223,7 @@ namespace P4wnP1
             string proc_filename = Struct.extractNullTerminatedString(data);
             string proc_args = Struct.extractNullTerminatedString(data);
 
-            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels);
+            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels); //starts the process already
 
             
             if (use_channels)
@@ -184,6 +232,7 @@ namespace P4wnP1
                 this.tl.AddChannel(proc.Ch_stdout);
                 this.tl.AddChannel(proc.Ch_stderr);
 
+                
                 /*
                 proc.Ch_stdin = this.tl.CreateChannel(Channel.Types.IN, Channel.Encodings.UTF8);
                 proc.Ch_stdout = this.tl.CreateChannel(Channel.Types.OUT, Channel.Encodings.UTF8);
@@ -192,7 +241,7 @@ namespace P4wnP1
             }
             
 
-            //start process
+            
 
             //generate method response
             List <byte> resp = Struct.packUInt32((UInt32) proc.Id);

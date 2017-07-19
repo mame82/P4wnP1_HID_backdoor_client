@@ -36,10 +36,8 @@ namespace P4wnP1
             this.ll.WaitForInputStream();
         }
 
-        
         public void ProcessOutSingle()
         {
-            //System.Diagnostics.Stopwatch sw = new System.Diagnostics.Stopwatch();
             
             ICollection keys = this.outChannels.Keys;
             foreach (Object key in keys)
@@ -47,21 +45,23 @@ namespace P4wnP1
                 Channel channel = (Channel) this.outChannels[key];
 
                 //while (channel.hasPendingOutData())
-                if (channel.hasPendingOutData()) //we only process a single chunk per channel (load balancing)
+                if (channel.hasPendingOutData()) //we only process a single chunk per channel (load balancing) and we only deliver data if the channel is linked 
                 {
                     UInt32 ch_id = (UInt32) channel.ID;
-                    byte[] data = channel.DequeueOutput();
 
-                    List<byte> stream = Struct.packUInt32(ch_id);
-                    stream = Struct.packByteArray(data, stream);
+                    if ((ch_id == 0) || channel.isLinked) // send output only if channel is linked (P4wnP1 knows about it) or it is the control channel (id 0)
+                    {
+                        byte[] data = channel.DequeueOutput();
 
-                    //Console.WriteLine("TransportLayer: trying to push channel data");
-                    //sw.Start();
-                    this.ll.PushOutputStream(stream.ToArray());
-                    //sw.Stop();
-            //        Console.WriteLine(sw.ElapsedMilliseconds);
-                    //sw.Reset();
-                    //Console.WriteLine("TransportLayer: done pushing channel data");
+                        List<byte> stream = Struct.packUInt32(ch_id);
+                        stream = Struct.packByteArray(data, stream);
+
+                        //Console.WriteLine("TransportLayer: trying to push channel data");
+
+                        this.ll.PushOutputStream(stream.ToArray());
+                    }
+                    
+                    
                 }
             }
 
