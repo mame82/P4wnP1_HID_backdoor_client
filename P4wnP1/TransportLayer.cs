@@ -13,7 +13,7 @@ namespace P4wnP1
         private Channel control_channel;
         //private UInt32 next_channel_id;
         private AutoResetEvent eventChannelOutputNeedsToBeProcessed;
-
+        private bool running;
         private object lockChannels;
 
         public TransportLayer(LinkLayer linklayer)
@@ -25,7 +25,7 @@ namespace P4wnP1
             this.outChannels = Hashtable.Synchronized(new Hashtable());
             this.control_channel = this.CreateAndAddChannel(Channel.Types.BIDIRECTIONAL, Channel.Encodings.BYTEARRAY, this.setOutputProcessingNeeded); //Caution, this has to be the first channel to be created, in order to assure channel ID is 0
 
-            
+            this.running = true;
             
             //new Channel(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL);
             //this.inChannels.Add(this.control_channel.ID, this.control_channel);
@@ -49,6 +49,12 @@ namespace P4wnP1
             this.eventChannelOutputNeedsToBeProcessed.Set();
         }
 
+        public void stop()
+        {
+            this.running = false;
+            this.ll.stop();
+        }
+
         public void ProcessOutSingle(bool blockIfNotthingToProcess)
         {
             if (blockIfNotthingToProcess)
@@ -56,10 +62,12 @@ namespace P4wnP1
                 //stop processing until sgnal is received
                 while (true)
                 {
-                    if (this.eventChannelOutputNeedsToBeProcessed.WaitOne(100)) break;
+                    if (this.eventChannelOutputNeedsToBeProcessed.WaitOne(100) || !this.running) break;
                 }
             }
 
+            //abort if we aren't in run state anymore
+            if (!this.running) return;
 
             Monitor.Enter(this.lockChannels);
             ICollection keys = this.outChannels.Keys;

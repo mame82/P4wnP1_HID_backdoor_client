@@ -18,6 +18,7 @@ namespace P4wnP1
         const UInt32 CTRL_MSG_FROM_CLIENT_RUN_METHOD_RESPONSE = 4;
         const UInt32 CTRL_MSG_FROM_CLIENT_ADD_CHANNEL = 5;
         const UInt32 CTRL_MSG_FROM_CLIENT_RUN_METHOD = 6;// client tasks server to run a method
+        const UInt32 CTRL_MSG_FROM_CLIENT_DESTROY_RESPONSE = 7;
 
         // message types from server (python) to client (powershell)
         const UInt32 CTRL_MSG_FROM_SERVER_STAGE2_RESPONSE = 1000;
@@ -26,6 +27,7 @@ namespace P4wnP1
         const UInt32 CTRL_MSG_FROM_SERVER_RUN_METHOD = 1003;
         const UInt32 CTRL_MSG_FROM_SERVER_ADD_CHANNEL_RESPONSE = 1004;
         const UInt32 CTRL_MSG_FROM_SERVER_RUN_METHOD_RESPONSE = 1005; // response from a method ran on server
+        const UInt32 CTRL_MSG_FROM_SERVER_DESTROY = 1006;
 
 
         private TransportLayer tl;
@@ -52,6 +54,12 @@ namespace P4wnP1
         public void stop()
         {
             this.running = false;
+            this.tl.stop();
+
+            //abort threads if still running
+            this.inputProcessingThread.Abort();
+            this.outputProcessingThread.Abort();
+
         }
 
         public void SendControlMessage(UInt32 msg_type)
@@ -110,6 +118,11 @@ namespace P4wnP1
                             Console.WriteLine(String.Format("Received control message RUN_METHOD! Method ID: {0}, Method Name: {1}, Method Args: {2}", new_method.id, new_method.name, new_method.args));
                             break;
 
+                        case CTRL_MSG_FROM_SERVER_DESTROY:
+                            this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_DESTROY_RESPONSE);
+                            this.stop();
+                            break;
+
                         default:
                             String data_utf8 = Encoding.UTF8.GetString(data.ToArray());
                             Console.WriteLine(String.Format("Received unknown MESSAGE TYPE for control channel! MessageType: {0}, Data: {1}", CtrlMessageType, data_utf8));
@@ -161,9 +174,11 @@ namespace P4wnP1
                 //stop processing until sgnal is received
                 while (true)
                 {
-                    if (this.eventDataNeedsToBeProcessed.WaitOne(100)) break;
+                    if (this.eventDataNeedsToBeProcessed.WaitOne(100) || (!running)) break;
                 }
 
+                //re-check if we are still running (eraly out)
+                if (!running) break;
 
 
 
