@@ -16,6 +16,7 @@ namespace P4wnP1
         public const UInt32 CTRL_MSG_FROM_CLIENT_STAGE2_RUNNING = 3;
         const UInt32 CTRL_MSG_FROM_CLIENT_RUN_METHOD_RESPONSE = 4;
         const UInt32 CTRL_MSG_FROM_CLIENT_ADD_CHANNEL = 5;
+        const UInt32 CTRL_MSG_FROM_CLIENT_RUN_METHOD = 6;// client tasks server to run a method
 
         // message types from server (python) to client (powershell)
         const UInt32 CTRL_MSG_FROM_SERVER_STAGE2_RESPONSE = 1000;
@@ -23,6 +24,7 @@ namespace P4wnP1
         const UInt32 CTRL_MSG_FROM_SERVER_SEND_PS_VERSION = 1002;
         const UInt32 CTRL_MSG_FROM_SERVER_RUN_METHOD = 1003;
         const UInt32 CTRL_MSG_FROM_SERVER_ADD_CHANNEL_RESPONSE = 1004;
+        const UInt32 CTRL_MSG_FROM_SERVER_RUN_METHOD_RESPONSE = 1005; // response from a method ran on server
 
 
         private TransportLayer tl;
@@ -62,6 +64,15 @@ namespace P4wnP1
         {
             Channel control_channel = this.tl.GetChannel(0);
             List<UInt32> method_remove_list = new List<UInt32>();
+
+            //DEBUG test for method creation by client on server
+            List<byte> method_request = Struct.packUInt32(1); // method ID
+            method_request = Struct.packNullTerminatedString("test_method_call_from_client", method_request);
+            method_request = Struct.packByteArray(new byte[] { 0, 1, 2, 3}, method_request);
+
+            this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_RUN_METHOD, method_request.ToArray());
+            //end DEBUG test for method creation by client on server
+
             while (this.running)
             {
                 this.tl.ProcessInSingle(false);
