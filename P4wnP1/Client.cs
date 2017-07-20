@@ -43,12 +43,24 @@ namespace P4wnP1
         public Client(TransportLayer tl)
         {
             this.tl = tl;
+            
             this.pending_client_processes = Hashtable.Synchronized(new Hashtable());
             this.pending_method_calls = Hashtable.Synchronized(new Hashtable());
             this.pendingMethodCallsLock = new object();
 
             this.running = true;
             this.eventDataNeedsToBeProcessed = new AutoResetEvent(true);
+
+            this.tl.registerTimeoutCallback(this.linklayerTimeoutHandler);
+        }
+
+        public void linklayerTimeoutHandler(long dt)
+        {
+            Console.WriteLine(String.Format("LinkLayer timeout {0}", dt));
+
+            //Self destroy
+            this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_DESTROY_RESPONSE);
+            this.stop();
         }
 
         public void stop()

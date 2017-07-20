@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 
@@ -22,6 +23,7 @@ namespace P4wnP1
 
         private Thread thread_in = null;
         private Thread thread_out = null;
+        private Thread thread_timeout_watcher = null;
 
         private Byte state_last_valid_seq_received; // last seq number which has been valid (arrived in sequential order)
         private Boolean state_invalid_seq_received; // last SEQ number received, was invalid if this flag is set, the sender is informed about this with a resend request
@@ -36,6 +38,12 @@ namespace P4wnP1
         private Object out_queue_byte_size_lock;
         private ManualResetEvent out_queue_limit_not_reached;
         private const int MAX_OUT_QUEUE_SIZE = 30000; //Maximum size of out queue in bytes, before writing to queue blocks
+
+        public delegate void LinkLayerTimeoutCallback(long dt);
+
+        private LinkLayerTimeoutCallback timeoutCallbacks;
+        public const int LINKLAYER_TIMEOUT_MILLIS = 1000;
+        private Stopwatch timeoutStopwatch;
 
         public LinkLayer(FileStream HIDin, FileStream HIDout)
         {
@@ -55,6 +63,13 @@ namespace P4wnP1
 
             this.out_queue_byte_size_lock = new Object();
             this.out_queue_limit_not_reached = new ManualResetEvent(true);
+
+            this.timeoutStopwatch = new Stopwatch();
+        }
+
+        public void registerTimeoutCallback(LinkLayerTimeoutCallback callback)
+        {
+            this.timeoutCallbacks += callback;
         }
 
         public void start()
@@ -70,9 +85,21 @@ namespace P4wnP1
 
             this.thread_out = new Thread(new ThreadStart(this.HIDOutThreadLoop));
             thread_out.Start();
-            
+
+            this.thread_timeout_watcher = new Thread(new ThreadStart(this.__detectTimeOut));
+            thread_timeout_watcher.Start();
+
         }
 
+        public void __detectTimeOut()
+        {
+            while (true)
+            {
+                long millis = this.timeoutStopwatch.ElapsedMilliseconds;
+                if (millis > LinkLayer.LINKLAYER_TIMEOUT_MILLIS) this.timeoutCallbacks(millis);
+                Thread.Sleep(LinkLayer.LINKLAYER_TIMEOUT_MILLIS / 2);
+            }
+        }
 
         public void stop()
         {
@@ -80,6 +107,7 @@ namespace P4wnP1
             //this.state_streamReceivedEvent.Close();
             if (this.thread_in != null) this.thread_in.Abort();
             if (this.thread_out != null) this.thread_out.Abort();
+            if (this.thread_timeout_watcher != null) this.thread_timeout_watcher.Abort();
         }
 
         public void connect()
@@ -129,9 +157,14 @@ namespace P4wnP1
 
             List<byte> stream = new List<byte>(); // used to re assemble a stream receiving via multiple reports
 
+            this.timeoutStopwatch.Start();
             while (true)
             {
                 HIDin.Read(inbytes, 0, REPORTSIZE);
+                this.timeoutStopwatch.Stop();
+                this.timeoutStopwatch.Reset();
+                this.timeoutStopwatch.Start();
+
 
                 //extract header data
                 byte LEN = (byte) (inbytes[1] & BITMASK); // payload length

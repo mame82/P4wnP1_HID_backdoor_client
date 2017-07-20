@@ -34,6 +34,11 @@ namespace P4wnP1
             //this.next_channel_id = 1;
         }
 
+        public void registerTimeoutCallback(LinkLayer.LinkLayerTimeoutCallback callback)
+        {
+            this.ll.registerTimeoutCallback(callback);
+        }
+
         public void WriteControlChannel(byte[] data)
         {
             this.control_channel.write(data);
