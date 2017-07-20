@@ -273,7 +273,17 @@ namespace P4wnP1
             return (byte[]) this.state_report_in_queue.Dequeue();
         }
 
+
         public void PushOutputStream(byte[] stream)
+        {
+            _PushOutputStream(stream, true);
+        }
+
+        public void PushOutputStreamNoBlock(byte[] stream)
+        {
+            _PushOutputStream(stream, false);
+        }
+        public void _PushOutputStream(byte[] stream, bool blockOnLimit)
         {
             //Console.WriteLine("WaitOne entered");
             this.out_queue_limit_not_reached.WaitOne();

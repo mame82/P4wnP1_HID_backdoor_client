@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 
 namespace P4wnP1
 {
@@ -29,17 +30,23 @@ namespace P4wnP1
 
         private TransportLayer tl;
         private Hashtable pending_method_calls;
+        private Object pendingMethodCallsLock;
         private Hashtable pending_client_processes;
         private bool running;
+        private Thread inputProcessingThread;
+        private Thread outputProcessingThread;
+
+        private AutoResetEvent eventDataNeedsToBeProcessed;
 
         public Client(TransportLayer tl)
         {
             this.tl = tl;
             this.pending_client_processes = Hashtable.Synchronized(new Hashtable());
             this.pending_method_calls = Hashtable.Synchronized(new Hashtable());
+            this.pendingMethodCallsLock = new object();
 
             this.running = true;
-            
+            this.eventDataNeedsToBeProcessed = new AutoResetEvent(true);
         }
 
         public void stop()
@@ -60,22 +67,29 @@ namespace P4wnP1
             this.tl.WriteControlChannel(msg.ToArray());
         }
 
-        public void run()
+        private void setProcessingNeeded(bool needed)
         {
+            if (needed) this.eventDataNeedsToBeProcessed.Set();
+            else this.eventDataNeedsToBeProcessed.Reset(); // this shouldn't be used, only the processing thread should be allowed to reset the signal
+        }
+
+        private void addRequestedClientMethodToQueue(ClientMethod method)
+        {
+            Monitor.Enter(this.pendingMethodCallsLock);
+            this.pending_method_calls[method.id] = method;
+            Monitor.Exit(this.pendingMethodCallsLock);
+            this.setProcessingNeeded(true);
+        }
+
+        private void __processInput()
+        {
+            //For now only input of control channel has to be delivered
+            // Input for ProcessChannels (STDIN) is directly written to the STDIN pipe of the process (when TransportLayer enqueues data)
+
             Channel control_channel = this.tl.GetChannel(0);
-            List<UInt32> method_remove_list = new List<UInt32>();
-
-            //DEBUG test for method creation by client on server
-            List<byte> method_request = Struct.packUInt32(1); // method ID
-            method_request = Struct.packNullTerminatedString("test_method_call_from_client", method_request);
-            method_request = Struct.packByteArray(new byte[] { 0, 1, 2, 3}, method_request);
-
-            this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_RUN_METHOD, method_request.ToArray());
-            //end DEBUG test for method creation by client on server
-
             while (this.running)
             {
-                this.tl.ProcessInSingle(false);
+                this.tl.ProcessInSingle(true); // blocks if no input from transport layer
 
                 /*
                  * read and process control channel data
@@ -91,7 +105,7 @@ namespace P4wnP1
                     {
                         case CTRL_MSG_FROM_SERVER_RUN_METHOD:
                             ClientMethod new_method = new ClientMethod(data);
-                            this.pending_method_calls[new_method.id] = new_method;
+                            this.addRequestedClientMethodToQueue(new_method);
 
                             Console.WriteLine(String.Format("Received control message RUN_METHOD! Method ID: {0}, Method Name: {1}, Method Args: {2}", new_method.id, new_method.name, new_method.args));
                             break;
@@ -102,16 +116,62 @@ namespace P4wnP1
                             break;
                     }
                 }
+            }
+        }
 
-                /*
-                 * Handle running processes
-                 */
-                 //ToDO: Handle running processes
+        private void __processOutput()
+        {
+            while (this.running)
+            {
+                this.tl.ProcessOutSingle(true);
+            }
+        }
+
+        private void debugServerMethodTest()
+        {
+            //DEBUG test for method creation by client on server
+            List<byte> method_request = Struct.packUInt32(1); // method ID
+            method_request = Struct.packNullTerminatedString("test_method_call_from_client", method_request);
+            method_request = Struct.packByteArray(new byte[] { 0, 1, 2, 3 }, method_request);
+
+            this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_RUN_METHOD, method_request.ToArray());
+            //end DEBUG test for method creation by client on server
+
+        }
+
+        public void run()
+        {
+            
+            List<UInt32> method_remove_list = new List<UInt32>();
+
+            // Delete this after testing
+            this.debugServerMethodTest();
+            
+            //start input thread
+            this.inputProcessingThread = new Thread(new ThreadStart(this.__processInput));
+            this.inputProcessingThread.Start();
+
+            this.outputProcessingThread = new Thread(new ThreadStart(this.__processOutput));
+            this.outputProcessingThread.Start();
+
+            while (this.running)
+            {
+                //this.tl.ProcessInSingle(false);
+
+                //stop processing until sgnal is received
+                while (true)
+                {
+                    if (this.eventDataNeedsToBeProcessed.WaitOne(100)) break;
+                }
+
+
 
 
                 /*
                  * Process running methods
                  */
+                Monitor.Enter(this.pendingMethodCallsLock);
+
                 ICollection method_ids = this.pending_method_calls.Keys;
                 foreach (UInt32 method_id in method_ids)
                 {
@@ -165,15 +225,14 @@ namespace P4wnP1
 
                     }
                 }
+                Monitor.Exit(this.pendingMethodCallsLock);
 
                 //remove finished methods
+                Monitor.Enter(this.pendingMethodCallsLock);
                 foreach (UInt32 method_id in method_remove_list) this.pending_method_calls.Remove(method_id);
+                Monitor.Exit(this.pendingMethodCallsLock);
 
-                /*
-                 * send outbound data
-                 */
 
-                this.tl.ProcessOutSingle();
             }
         }
 
@@ -234,7 +293,7 @@ namespace P4wnP1
             string proc_filename = Struct.extractNullTerminatedString(data);
             string proc_args = Struct.extractNullTerminatedString(data);
 
-            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels); //starts the process already
+            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels, this.tl.setOutputProcessingNeeded); //starts the process already
 
             
             if (use_channels)

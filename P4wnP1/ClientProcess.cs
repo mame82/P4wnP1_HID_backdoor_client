@@ -16,7 +16,7 @@ namespace P4wnP1
         private Process process;
         private ProcessStartInfo processStartInfo;
 
-        public ClientProcess(string filename, string args, bool useChannels)
+        public ClientProcess(string filename, string args, bool useChannels, Channel.CallbackOutputProcessingNeeded onOutDirty)
         {
             //this.filename = filename;
             //this.args = args;
@@ -41,9 +41,9 @@ namespace P4wnP1
             if (useChannels)
             {
                 // create Channels objects and bind to streams
-                this.ch_stdin = new ProcessChannel(this.process, this.process.StandardInput.BaseStream, Channel.Encodings.UTF8, Channel.Types.IN);
-                this.ch_stdout = new ProcessChannel(this.process, this.process.StandardOutput.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT);
-                this.ch_stderr = new ProcessChannel(this.process, this.process.StandardError.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT);
+                this.ch_stdin = new ProcessChannel(this.process, this.process.StandardInput.BaseStream, Channel.Encodings.UTF8, Channel.Types.IN, onOutDirty);
+                this.ch_stdout = new ProcessChannel(this.process, this.process.StandardOutput.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty);
+                this.ch_stderr = new ProcessChannel(this.process, this.process.StandardError.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty);
             }
         }
 

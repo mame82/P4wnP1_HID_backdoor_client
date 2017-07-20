@@ -17,7 +17,20 @@ namespace P4wnP1
         public Encodings encoding { get; }
         public Types type { get; }
         public UInt32 ID { get; }
-        public bool isLinked { get; set; } //Channel is known on python side, if this isn't be true; data sent could be ignored by the other end
+        private bool _isLinked;
+        public bool isLinked
+        {
+            get
+            {
+                return _isLinked;
+            }
+            set
+            {
+                _isLinked = value;
+                // if this is an output channel, inform Callback listeners about the change, as processing could be needed
+                if (this.type != Types.IN) this.onOutDirty();
+            }
+        } //Channel is known on python side, if this isn't be true; data sent could be ignored by the other end
 
 
         protected Queue in_queue = null;
@@ -25,15 +38,18 @@ namespace P4wnP1
         protected Queue out_queue_backup = null;
 
         protected static UInt32 next_id = 0;
+        protected CallbackOutputProcessingNeeded onOutDirty;
 
-        public Channel(Encodings encoding, Types type)
+        public delegate void CallbackOutputProcessingNeeded(); //the delgate is used, to inform somebody that output processing is needed (in our case the LinkLayer)
+
+        public Channel(Encodings encoding, Types type, CallbackOutputProcessingNeeded onOutDirty)
         {
             this.ID = next_id;
             next_id++;
             this.encoding = encoding;
             this.type = type;
+            this.onOutDirty = onOutDirty;
             this.isLinked = false;
-
             // if IN channel or BIDIRECTIONAL channel, generate inbound queue
             if (this.type != Types.OUT) this.in_queue = Queue.Synchronized(new Queue());
 
@@ -72,6 +88,10 @@ namespace P4wnP1
             //write data to OUT or BIDIRECTIONAL (output) channel from application layer
             if (this.type == Types.IN) return; // can not write to IN channel
             this.out_queue.Enqueue(data);
+
+            //Inform about needed output processing
+            this.onOutDirty();
+
         }
 
         public virtual byte[] DequeueOutput()
@@ -104,14 +124,17 @@ namespace P4wnP1
         private Thread thread_out = null;
         List<byte> accumulation_out;
 
+        private int bufferedOutBytes;
+
         //const int CHUNK_SIZE = 59996;
         const int CHUNK_SIZE = 3096;
 
-        public ProcessChannel(Process process, Stream stream, Encodings encoding, Types type) : base(encoding, type)
+        public ProcessChannel(Process process, Stream stream, Encodings encoding, Types type, CallbackOutputProcessingNeeded onOutDirty) : base(encoding, type, onOutDirty)
         {
             this.stream = stream;
             this.process = process;
             this.lock_output = new object();
+            this.bufferedOutBytes = 0;
 
             //if this is an out channel, we create a thread permannently reading from the stream
             if (this.type != Types.IN)
@@ -129,10 +152,12 @@ namespace P4wnP1
 
             while (!this.process.HasExited)
             {
+                //This could be a CPU consuming loop if much output is produced and couldn't be delivered fast enough
+                //as our theoretical maximum transfer rate is 60000 Bps we introduce a sleep when the out_queue_size exceeds 60000 bytes
+                if (this.bufferedOutBytesCount() > 60000) Thread.Sleep(50); // 50 ms sleep
+
                 int count = this.stream.Read(readBuf, 0, readBuf.Length);
-
                 
-
                 // trim data down to count
                 readbufCopy.AddRange(readBuf);
                 //readbufCopy.GetRange(0, count);
@@ -152,8 +177,18 @@ namespace P4wnP1
             //Console.WriteLine("Entering Monitor: dequeue");
             Monitor.Enter(this.lock_output);
             byte[] res = base.DequeueOutput();
+            this.bufferedOutBytes -= res.Length;
             Monitor.Exit(this.lock_output);
             //Console.WriteLine("Exitting Monitor: dequeue");
+            return res;
+        }
+
+        private int bufferedOutBytesCount()
+        {
+            int res;
+            Monitor.Enter(this.lock_output);
+            res = this.bufferedOutBytes;
+            Monitor.Exit(this.lock_output);
             return res;
         }
 
@@ -166,7 +201,8 @@ namespace P4wnP1
             //Console.WriteLine(String.Format("Entering Monitor: repack, thread {0}", Thread.CurrentThread.ManagedThreadId));
             Monitor.Enter(this.lock_output);
 
-            base.write(data);
+            base.write(data); // us parent class write to enque data
+            this.bufferedOutBytes += data.Length;
 
             while (this.out_queue.Count > 0)
             {
@@ -208,6 +244,8 @@ namespace P4wnP1
             this.out_queue = this.out_queue_backup;
             this.out_queue_backup = tmp;
 
+            
+
             Monitor.Exit(this.lock_output);
             //Console.WriteLine("Exitting Monitor: repack");
         }
@@ -215,6 +253,8 @@ namespace P4wnP1
         public override void write(byte[] data)
         {
             repackOutputIntoChunks(data);
+            //Inform about needed output processing
+            if (this.out_queue.Count > 0) this.onOutDirty();
 
             /*
             Monitor.Enter(this.lock_output);

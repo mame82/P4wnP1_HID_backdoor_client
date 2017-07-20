@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace P4wnP1
 {
@@ -11,14 +12,21 @@ namespace P4wnP1
         private Hashtable outChannels;
         private Channel control_channel;
         //private UInt32 next_channel_id;
+        private AutoResetEvent eventChannelOutputNeedsToBeProcessed;
+
+        private object lockChannels;
 
         public TransportLayer(LinkLayer linklayer)
         {
+            this.lockChannels = new object();
+            this.eventChannelOutputNeedsToBeProcessed = new AutoResetEvent(true);
             this.ll = linklayer;
             this.inChannels = Hashtable.Synchronized(new Hashtable());
             this.outChannels = Hashtable.Synchronized(new Hashtable());
-            this.control_channel = this.CreateChannel(Channel.Types.BIDIRECTIONAL, Channel.Encodings.BYTEARRAY); //Caution, this has to be the first channel to be created, in order to assure channel ID is 0
-                
+            this.control_channel = this.CreateAndAddChannel(Channel.Types.BIDIRECTIONAL, Channel.Encodings.BYTEARRAY, this.setOutputProcessingNeeded); //Caution, this has to be the first channel to be created, in order to assure channel ID is 0
+
+            
+            
             //new Channel(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL);
             //this.inChannels.Add(this.control_channel.ID, this.control_channel);
             //this.outChannels.Add(this.control_channel.ID, this.control_channel);
@@ -36,9 +44,24 @@ namespace P4wnP1
             this.ll.WaitForInputStream();
         }
 
-        public void ProcessOutSingle()
+        public void setOutputProcessingNeeded()
         {
-            
+            this.eventChannelOutputNeedsToBeProcessed.Set();
+        }
+
+        public void ProcessOutSingle(bool blockIfNotthingToProcess)
+        {
+            if (blockIfNotthingToProcess)
+            {
+                //stop processing until sgnal is received
+                while (true)
+                {
+                    if (this.eventChannelOutputNeedsToBeProcessed.WaitOne(100)) break;
+                }
+            }
+
+
+            Monitor.Enter(this.lockChannels);
             ICollection keys = this.outChannels.Keys;
             foreach (Object key in keys)
             {
@@ -51,6 +74,8 @@ namespace P4wnP1
 
                     if ((ch_id == 0) || channel.isLinked) // send output only if channel is linked (P4wnP1 knows about it) or it is the control channel (id 0)
                     {
+                        
+
                         byte[] data = channel.DequeueOutput();
 
                         List<byte> stream = Struct.packUInt32(ch_id);
@@ -58,12 +83,16 @@ namespace P4wnP1
 
                         //Console.WriteLine("TransportLayer: trying to push channel data");
 
-                        this.ll.PushOutputStream(stream.ToArray());
+                        if (ch_id == 0) this.ll.PushOutputStreamNoBlock(stream.ToArray());
+                        else this.ll.PushOutputStream(stream.ToArray());
                     }
-                    
-                    
                 }
+
+                if (channel.hasPendingOutData()) this.eventChannelOutputNeedsToBeProcessed.Set(); //reenable event, if there's still data to process
             }
+            Monitor.Exit(this.lockChannels);
+            //We only reenable the signal if there's still data to process
+
 
             /*
             if (this.ll.PendingOutputStreamCount() > 0)
@@ -100,29 +129,39 @@ namespace P4wnP1
         public Channel GetChannel(UInt32 id)
         {
             //get channel by ID, return null if not found
-            
-            if (this.inChannels.Contains(id)) return (Channel)this.inChannels[id];
-            if (this.outChannels.Contains(id)) return (Channel)this.outChannels[id];
+            Monitor.Enter(this.lockChannels);
+            if (this.inChannels.Contains(id))
+            {
+                Monitor.Exit(this.lockChannels);
+                return (Channel)this.inChannels[id];
+            }
+            if (this.outChannels.Contains(id))
+            {
+                Monitor.Exit(this.lockChannels);
+                return (Channel)this.outChannels[id];
+            }
+            Monitor.Exit(this.lockChannels);
 
             return null;
         }
 
-        public Channel CreateChannel(Channel.Types type, Channel.Encodings encoding)
+        
+        public Channel CreateAndAddChannel(Channel.Types type, Channel.Encodings encoding, Channel.CallbackOutputProcessingNeeded onOutDirty)
         {
-            Channel ch = new Channel(encoding, type);
+            Channel ch = new Channel(encoding, type, onOutDirty);
+
+            this.AddChannel(ch);
             
-
-            if (ch.type != Channel.Types.OUT) this.inChannels.Add(ch.ID, ch);
-            if (ch.type != Channel.Types.IN) this.outChannels.Add(ch.ID, ch);
-
             return ch;
         }
+        
 
         public Channel AddChannel(Channel ch)
         {
+            Monitor.Enter(this.lockChannels);
             if (ch.type != Channel.Types.OUT) this.inChannels.Add(ch.ID, ch);
             if (ch.type != Channel.Types.IN) this.outChannels.Add(ch.ID, ch);
-
+            Monitor.Exit(this.lockChannels);
             return ch;
         }
         /*
