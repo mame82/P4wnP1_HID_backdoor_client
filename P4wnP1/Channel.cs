@@ -129,6 +129,12 @@ namespace P4wnP1
         //const int CHUNK_SIZE = 59996;
         const int CHUNK_SIZE = 3096;
 
+        private onProcExitedCallback callbacksExit = null;
+
+        public delegate void onProcExitedCallback(Process proc);
+
+        
+
         public ProcessChannel(Process process, Stream stream, Encodings encoding, Types type, CallbackOutputProcessingNeeded onOutDirty) : base(encoding, type, onOutDirty)
         {
             this.stream = stream;
@@ -143,6 +149,11 @@ namespace P4wnP1
                 this.thread_out = new Thread(new ThreadStart(this.passThruOut));
                 thread_out.Start();
             }
+        }
+
+        public void registerProcExitedCallback(onProcExitedCallback callback)
+        {
+            this.callbacksExit += callback;
         }
 
         public void passThruOut()
@@ -170,6 +181,8 @@ namespace P4wnP1
 
                 readbufCopy.Clear();
             }
+            if (this.callbacksExit != null) this.callbacksExit(this.process);
+            
         }
 
         public override byte[] DequeueOutput()

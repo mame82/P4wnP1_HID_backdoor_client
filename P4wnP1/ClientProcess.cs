@@ -12,9 +12,13 @@ namespace P4wnP1
         //private string filename;
         //private string args;
         private bool useChannels;
-        private Channel ch_stdin = null, ch_stderr = null, ch_stdout = null;
+        private ProcessChannel ch_stdin = null, ch_stderr = null, ch_stdout = null;
         private Process process;
         private ProcessStartInfo processStartInfo;
+
+        public delegate void onExitCallback(ClientProcess cproc);
+
+        private onExitCallback exitCallbacks = null;
 
         public ClientProcess(string filename, string args, bool useChannels, Channel.CallbackOutputProcessingNeeded onOutDirty)
         {
@@ -44,7 +48,21 @@ namespace P4wnP1
                 this.ch_stdin = new ProcessChannel(this.process, this.process.StandardInput.BaseStream, Channel.Encodings.UTF8, Channel.Types.IN, onOutDirty);
                 this.ch_stdout = new ProcessChannel(this.process, this.process.StandardOutput.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty);
                 this.ch_stderr = new ProcessChannel(this.process, this.process.StandardError.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty);
+
+                this.ch_stdout.registerProcExitedCallback(onExit);
             }
+
+            
+        }
+
+        public void registerOnExitCallback(onExitCallback callback)
+        {
+            this.exitCallbacks += callback;
+        }
+
+        private void onExit(Process process)
+        {
+            if (this.exitCallbacks != null) this.exitCallbacks(this);
         }
 
         public string proc_filename

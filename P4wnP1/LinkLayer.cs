@@ -95,8 +95,11 @@ namespace P4wnP1
         {
             while (true)
             {
+                Monitor.Enter(this.timeoutStopwatch);
                 long millis = this.timeoutStopwatch.ElapsedMilliseconds;
+                Monitor.Exit(this.timeoutStopwatch);
                 if (millis > LinkLayer.LINKLAYER_TIMEOUT_MILLIS) this.timeoutCallbacks(millis);
+                Console.WriteLine(millis);
                 Thread.Sleep(LinkLayer.LINKLAYER_TIMEOUT_MILLIS / 2);
             }
         }
@@ -157,13 +160,17 @@ namespace P4wnP1
 
             List<byte> stream = new List<byte>(); // used to re assemble a stream receiving via multiple reports
 
+            Monitor.Enter(this.timeoutStopwatch);
             this.timeoutStopwatch.Start();
+            Monitor.Exit(this.timeoutStopwatch);
             while (true)
             {
                 HIDin.Read(inbytes, 0, REPORTSIZE);
+                Monitor.Enter(this.timeoutStopwatch);
                 this.timeoutStopwatch.Stop();
                 this.timeoutStopwatch.Reset();
                 this.timeoutStopwatch.Start();
+                Monitor.Exit(this.timeoutStopwatch);
 
 
                 //extract header data
@@ -255,7 +262,7 @@ namespace P4wnP1
                  * Create the final report which should be send
                  */
 
-                if (report_payload.Count < 62 && report_payload.Count > 0) Console.WriteLine(String.Format("Output report with payload size {0} written",  report_payload.Count));
+                //if (report_payload.Count < 62 && report_payload.Count > 0) Console.WriteLine(String.Format("Output report with payload size {0} written",  report_payload.Count));
 
                 //create LEN_FIN byte
                 byte BYTE1_LEN_FLAGS = (byte) (report_payload.Count & BITMASK);

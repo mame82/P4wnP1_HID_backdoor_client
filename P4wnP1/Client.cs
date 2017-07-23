@@ -19,6 +19,7 @@ namespace P4wnP1
         const UInt32 CTRL_MSG_FROM_CLIENT_ADD_CHANNEL = 5;
         const UInt32 CTRL_MSG_FROM_CLIENT_RUN_METHOD = 6;// client tasks server to run a method
         const UInt32 CTRL_MSG_FROM_CLIENT_DESTROY_RESPONSE = 7;
+        const UInt32 CTRL_MSG_FROM_CLIENT_PROCESS_EXITED = 8;
 
         // message types from server (python) to client (powershell)
         const UInt32 CTRL_MSG_FROM_SERVER_STAGE2_RESPONSE = 1000;
@@ -33,7 +34,13 @@ namespace P4wnP1
         private TransportLayer tl;
         private Hashtable pending_method_calls;
         private Object pendingMethodCallsLock;
+        
+
         private Hashtable pending_client_processes;
+        private Object pendingClientProcessesLock;
+        List<ClientProcess> exitedProcesses;
+        private Object exitedProcessesLock;
+
         private bool running;
         private Thread inputProcessingThread;
         private Thread outputProcessingThread;
@@ -45,6 +52,10 @@ namespace P4wnP1
             this.tl = tl;
             
             this.pending_client_processes = Hashtable.Synchronized(new Hashtable());
+            this.pendingClientProcessesLock = new object();
+            this.exitedProcesses = new List<ClientProcess>();
+            this.exitedProcessesLock = new object();
+
             this.pending_method_calls = Hashtable.Synchronized(new Hashtable());
             this.pendingMethodCallsLock = new object();
 
@@ -99,6 +110,15 @@ namespace P4wnP1
             this.pending_method_calls[method.id] = method;
             Monitor.Exit(this.pendingMethodCallsLock);
             this.setProcessingNeeded(true);
+        }
+
+        private void onProcessExit(ClientProcess cproc)
+        {
+            Monitor.Enter(this.exitedProcessesLock);
+            this.exitedProcesses.Add(cproc);
+            this.setProcessingNeeded(true);
+            Console.WriteLine(String.Format("Proc with id {0} and filename '{1}' exited.", cproc.Id, cproc.proc_filename));
+            Monitor.Exit(this.exitedProcessesLock);
         }
 
         private void __processInput()
@@ -179,6 +199,8 @@ namespace P4wnP1
             this.outputProcessingThread = new Thread(new ThreadStart(this.__processOutput));
             this.outputProcessingThread.Start();
 
+            
+
             while (this.running)
             {
                 //this.tl.ProcessInSingle(false);
@@ -193,6 +215,23 @@ namespace P4wnP1
                 if (!running) break;
 
 
+                /*
+                 * remove exited processes
+                 */
+                Monitor.Enter(this.exitedProcessesLock);
+                foreach (ClientProcess cproc in this.exitedProcesses)
+                {
+                    Monitor.Enter(this.pendingClientProcessesLock);
+                    this.pending_client_processes.Remove(cproc.Id);
+                    Monitor.Exit(this.pendingClientProcessesLock);
+
+                    //ToDo: inform client about process removement
+                    this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_PROCESS_EXITED, (Struct.packUInt32((UInt32) cproc.Id)).ToArray());
+
+                    //ToDo: destroy channels and inform client
+                }
+                this.exitedProcesses.Clear();
+                Monitor.Exit(this.exitedProcessesLock);
 
                 /*
                  * Process running methods
@@ -321,6 +360,7 @@ namespace P4wnP1
             string proc_args = Struct.extractNullTerminatedString(data);
 
             ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels, this.tl.setOutputProcessingNeeded); //starts the process already
+            proc.registerOnExitCallback(this.onProcessExit);
 
             
             if (use_channels)
@@ -357,8 +397,10 @@ namespace P4wnP1
                 resp = Struct.packUInt32(0, resp);
             }
 
+            Monitor.Enter(this.pendingClientProcessesLock);
             this.pending_client_processes.Add(proc.Id, proc);
-            
+            Monitor.Exit(this.pendingClientProcessesLock);
+
             //throw new ClientMethodException(String.Format("Not implemented: Trying to start proc '{0}' with args: {1}", proc_filename, proc_args));
             return resp.ToArray();
         }
