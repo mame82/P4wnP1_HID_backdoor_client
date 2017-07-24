@@ -350,6 +350,24 @@ namespace P4wnP1
             return Struct.packNullTerminatedString(String.Format("Channel with ID {0} set to 'hasLink'", ch_id)).ToArray();
         }
 
+        private byte[] core_kill_proc(byte[] args)
+        {
+            UInt32 proc_id = Struct.extractUInt32(new List<byte>(args));
+            //check if proc ID exists (for now only managed procs)
+            if (this.pending_client_processes.Contains((int)proc_id))
+            {
+                ((ClientProcess)this.pending_client_processes[(int)proc_id]).kill();
+                //return Struct.packNullTerminatedString(String.Format("Sent kill signal to process with ID {0}", proc_id)).ToArray();
+                return Struct.packUInt32(proc_id).ToArray(); // return process id on success
+            }
+            else
+            {
+                throw new ClientMethodException(String.Format("Process with ID {0} not known. Kill signal hasn't been sent", proc_id));
+                //return Struct.packNullTerminatedString(String.Format("Process with ID {0} not known. Kill signal hasn't been sent", proc_id)).ToArray();
+            }
+
+        }
+
         private byte[] core_create_proc(byte[] args)
         {
             List<byte> data = new List<byte>(args);

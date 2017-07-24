@@ -108,5 +108,10 @@ namespace P4wnP1
                 
             }
         }
+
+        public void kill()
+        {
+            this.process.Kill();
+        }
     }
 }

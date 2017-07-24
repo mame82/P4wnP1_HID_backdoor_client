@@ -99,7 +99,7 @@ namespace P4wnP1
                 long millis = this.timeoutStopwatch.ElapsedMilliseconds;
                 Monitor.Exit(this.timeoutStopwatch);
                 if (millis > LinkLayer.LINKLAYER_TIMEOUT_MILLIS) this.timeoutCallbacks(millis);
-                Console.WriteLine(millis);
+                //Console.WriteLine(millis);
                 Thread.Sleep(LinkLayer.LINKLAYER_TIMEOUT_MILLIS / 2);
             }
         }
@@ -170,6 +170,7 @@ namespace P4wnP1
                 this.timeoutStopwatch.Stop();
                 this.timeoutStopwatch.Reset();
                 this.timeoutStopwatch.Start();
+                //Console.WriteLine(this.timeoutStopwatch.ElapsedTicks);
                 Monitor.Exit(this.timeoutStopwatch);
 
 
