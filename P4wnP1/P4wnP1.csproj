@@ -41,6 +41,7 @@
     <Compile Include="Client.cs" />
     <Compile Include="ClientMethod.cs" />
     <Compile Include="ClientProcess.cs" />
+    <Compile Include="FileSystem.cs" />
     <Compile Include="LinkLayer.cs" />
     <Compile Include="Runner.cs" />
     <Compile Include="Struct.cs" />
