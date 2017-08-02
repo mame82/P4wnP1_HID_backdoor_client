@@ -113,6 +113,78 @@ namespace P4wnP1
         
     }
 
+    public class FileChannel : Channel
+    {
+        private static bool PROTECT_USER = true; //if true, user is protected from overwriting files accidently
+
+        private FileMode fileMode;
+        private FileAccess fileAccess;
+        private String requestedAccessMode = null;
+        private byte targetMode = 0;
+        private String filename = null;
+        private FileStream fs;
+
+        public FileChannel(CallbackOutputProcessingNeeded onOutDirty, String filename, String accessMode, byte targetMode, bool force = false) : base(Encodings.BYTEARRAY, Types.BIDIRECTIONAL, onOutDirty)
+        {
+            this.requestedAccessMode = accessMode;
+            this.targetMode = targetMode;
+            this.filename = filename;
+            
+
+            bool userProtect = FileChannel.PROTECT_USER && !force;
+            if (targetMode == 0)
+            {
+                //is targeting disc
+                this.fileAccess = FileChannel.translateToAccessMode(requestedAccessMode);
+                this.fileMode = FileChannel.translateToFileMode(requestedAccessMode, userProtect);
+
+                this.fs = File.Open(this.filename, this.fileMode, this.fileAccess); //Exceptions are catched by caller and delivered to remote server
+
+            }
+            else if(targetMode == 1)
+            {
+                //is targeting in-memory file transfer (write only)
+            }
+            else
+            {
+                //unsupported target mode
+            }
+        }
+
+        private static FileMode translateToFileMode(String accessMode, bool userProtect = true)
+        {
+            /*
+            FILEMODE_READ = "rb" --> Open
+            FILEMODE_WRITE = "wb" --> CreateNew (userProtect), Create (!userProtect)
+            FILEMODE_READWRITE = "r+b" --> Open (userProtect), OpenOrCreate (!userProtect)
+            FILEMODE_APPEND = "ab" --> Append
+            */
+            if (accessMode == "rb") return FileMode.Open;
+            else if (accessMode == "wb" && userProtect) return FileMode.CreateNew;
+            else if (accessMode == "wb" && !userProtect) return FileMode.Create;
+            else if (accessMode == "r+b" && userProtect) return FileMode.Open;
+            else if (accessMode == "r+b" && !userProtect) return FileMode.OpenOrCreate;
+            else if (accessMode == "ab") return FileMode.Append;
+            else throw new ArgumentException(String.Format("Unknown file access mode: '{0}'", accessMode));
+        }
+
+        private static FileAccess translateToAccessMode(String accessMode)
+        {
+            /*
+            FILEMODE_READ = "rb" --> READ
+            FILEMODE_WRITE = "wb" --> WRITE
+            FILEMODE_READWRITE = "r+b" --> READWRITE
+            FILEMODE_APPEND = "ab" --> WRITE
+            */
+            if (accessMode == "rb") return FileAccess.Read;
+            else if (accessMode == "wb") return FileAccess.Write;
+            else if (accessMode == "r+b") return FileAccess.ReadWrite;
+            else if (accessMode == "ab") return FileAccess.Write;
+            else throw new ArgumentException(String.Format("Unknown file access mode: '{0}'", accessMode));
+
+        }
+    }
+
     public class ProcessChannel : Channel
     {
         private const int READ_BUFFER_SIZE = 1024;

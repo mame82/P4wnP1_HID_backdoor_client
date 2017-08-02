@@ -40,7 +40,12 @@ namespace P4wnP1
 
             this.process = new Process();
             this.process.StartInfo = this.processStartInfo;
-            this.process.Start();
+            try // exception isn't thrown to the caller otherwise
+            {
+                this.process.Start();
+            }
+            finally { }
+            
 
             if (useChannels)
             {

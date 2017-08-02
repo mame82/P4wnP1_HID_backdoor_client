@@ -8,12 +8,12 @@ namespace P4wnP1
 {
     public class FileSystem
     {
-        public String pwd()
+        public static String pwd()
         {
             return Directory.GetCurrentDirectory();
         }
 
-        public String cd(String targetDir)
+        public static String cd(String targetDir)
         {
             try
             {
@@ -50,7 +50,7 @@ namespace P4wnP1
             }
         }
 
-        public String[] ls(String dir)
+        public static String[] ls(String dir)
         {
             if ((dir == null) || (dir.Length == 0)) dir = ".";
             try

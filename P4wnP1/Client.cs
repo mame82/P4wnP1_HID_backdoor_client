@@ -343,12 +343,59 @@ namespace P4wnP1
         }
         */
 
+        private byte[] core_call_fs_command(byte[] args)
+        {
+            List<byte> argbytes = new List<byte>(args);
+            String command = Struct.extractNullTerminatedString(argbytes);
+            String resstr = "";
+            if (command == "pwd") resstr = FileSystem.pwd();
+            else if (command == "ls")
+            {
+                String target = Struct.extractNullTerminatedString(argbytes);
+                String[] entries = FileSystem.ls(target);
+                foreach (String entry in entries) resstr += entry + "\n";
+            }
+            else if (command == "cd")
+            {
+                String target = Struct.extractNullTerminatedString(argbytes);
+                resstr = FileSystem.cd(target);
+            }
+            else
+            {
+                throw new ClientMethodException(String.Format("Unknown command {0}", command));
+            }
+
+
+            return Struct.packNullTerminatedString(resstr).ToArray();
+        }
+
         private byte[] core_inform_channel_added(byte[] args)
         {
             UInt32 ch_id = Struct.extractUInt32(new List<byte>(args));
             ((Channel)this.tl.GetChannel(ch_id)).isLinked = true;
             return Struct.packNullTerminatedString(String.Format("Channel with ID {0} set to 'hasLink'", ch_id)).ToArray();
         }
+
+        
+        private byte[] core_create_filechannel(byte[] args)
+        {
+            List<byte> request = new List<byte>(args);
+            String local_filename = Struct.extractNullTerminatedString(request);
+            String local_file_access_mode = Struct.extractNullTerminatedString(request);
+            Byte local_file_target = Struct.extractByte(request); //0 = disc, 1 = in memory
+            Byte local_file_force = Struct.extractByte(request); //0 = don't force, 1= force (if force is set, non existing file get overwritten on WRITE, and non existing files are created on READWRITE
+
+
+            //create the file channel, on error an exception will be thrown and handled by the caller
+            FileChannel fc = new FileChannel(this.tl.setOutputProcessingNeeded, local_filename, local_file_access_mode, local_file_target, (local_file_force == 1));
+
+            //String response = String.Format("Created file channel for '{0}', access '{1}', mode: {2}, force {3}", local_filename, local_file_access_mode, local_file_target, local_file_force);
+
+            //if we are here, channel creation succeded and we return the channel ID as response
+            List<byte> response = Struct.packUInt32(fc.ID);
+            return response.ToArray();
+        }
+
 
         private byte[] core_kill_proc(byte[] args)
         {
