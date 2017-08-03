@@ -20,7 +20,7 @@ namespace P4wnP1
 
         private onExitCallback exitCallbacks = null;
 
-        public ClientProcess(string filename, string args, bool useChannels, Channel.CallbackOutputProcessingNeeded onOutDirty)
+        public ClientProcess(string filename, string args, bool useChannels, Channel.CallbackOutputProcessingNeeded onOutDirty, Channel.CallbackChannelProcessingNeeded onChannelDirty)
         {
             //this.filename = filename;
             //this.args = args;
@@ -50,9 +50,9 @@ namespace P4wnP1
             if (useChannels)
             {
                 // create Channels objects and bind to streams
-                this.ch_stdin = new ProcessChannel(this.process, this.process.StandardInput.BaseStream, Channel.Encodings.UTF8, Channel.Types.IN, onOutDirty);
-                this.ch_stdout = new ProcessChannel(this.process, this.process.StandardOutput.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty);
-                this.ch_stderr = new ProcessChannel(this.process, this.process.StandardError.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty);
+                this.ch_stdin = new ProcessChannel(this.process, this.process.StandardInput.BaseStream, Channel.Encodings.UTF8, Channel.Types.IN, onOutDirty, onChannelDirty);
+                this.ch_stdout = new ProcessChannel(this.process, this.process.StandardOutput.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty, onChannelDirty);
+                this.ch_stderr = new ProcessChannel(this.process, this.process.StandardError.BaseStream, Channel.Encodings.UTF8, Channel.Types.OUT, onOutDirty, onChannelDirty);
 
                 this.ch_stdout.registerProcExitedCallback(onExit);
             }
@@ -117,6 +117,13 @@ namespace P4wnP1
         public void kill()
         {
             this.process.Kill();
+        }
+
+        public void Dispose()
+        {
+            this.ch_stderr.shouldBeClosed = true;
+            this.ch_stdout.shouldBeClosed = true;
+            this.ch_stdin.shouldBeClosed = true;
         }
     }
 }

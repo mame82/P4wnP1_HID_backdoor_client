@@ -18,6 +18,22 @@ namespace P4wnP1
         public Types type { get; }
         public UInt32 ID { get; }
         private bool _isLinked;
+        private bool _shouldBeClosed = false;
+
+        public bool shouldBeClosed
+        {
+            get
+            {
+                return _shouldBeClosed;
+            }
+            set
+            {
+                _shouldBeClosed = value;
+                // if this is an output channel, inform Callback listeners about the change, as processing could be needed
+                if (this._shouldBeClosed) this.onChannelDirty?.Invoke();
+            }
+        }
+
         public bool isLinked
         {
             get
@@ -39,16 +55,19 @@ namespace P4wnP1
 
         protected static UInt32 next_id = 0;
         protected CallbackOutputProcessingNeeded onOutDirty;
+        protected CallbackChannelProcessingNeeded onChannelDirty;
 
         public delegate void CallbackOutputProcessingNeeded(); //the delgate is used, to inform somebody that output processing is needed (in our case the LinkLayer)
+        public delegate void CallbackChannelProcessingNeeded(); //the delgate is used, to inform somebody that output processing is needed (in our case the LinkLayer)
 
-        public Channel(Encodings encoding, Types type, CallbackOutputProcessingNeeded onOutDirty)
+        public Channel(Encodings encoding, Types type, CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty)
         {
             this.ID = next_id;
             next_id++;
             this.encoding = encoding;
             this.type = type;
             this.onOutDirty = onOutDirty;
+            this.onChannelDirty = onChannelDirty;
             this.isLinked = false;
             // if IN channel or BIDIRECTIONAL channel, generate inbound queue
             if (this.type != Types.OUT) this.in_queue = Queue.Synchronized(new Queue());
@@ -110,7 +129,103 @@ namespace P4wnP1
             this.in_queue.Enqueue(data);
         }
 
-        
+        public virtual void onClose()
+        {
+            
+        }
+    }
+
+    public class StreamChannel : Channel
+    {
+        private Stream stream;
+
+        private enum CH_MSG_TYPE
+        {
+            CHANNEL_CONTROL_REQUEST_STATE = 1,
+            CHANNEL_CONTROL_REQUEST_READ = 2,
+            CHANNEL_CONTROL_REQUEST_FLUSH = 3,
+            CHANNEL_CONTROL_REQUEST_CLOSE = 4,
+            CHANNEL_CONTROL_REQUEST_POSITION = 5,
+            CHANNEL_CONTROL_REQUEST_LENGTH = 6,
+            CHANNEL_CONTROL_REQUEST_READ_TIMEOUT = 7,
+            CHANNEL_CONTROL_REQUEST_WRITE_TIMEOUT = 8,
+            CHANNEL_CONTROL_REQUEST_SEEK = 9
+        }
+
+        public StreamChannel(Stream stream, CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty) : base(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL, onOutDirty, onChannelDirty)
+        {
+            this.stream = stream;
+        }
+
+        public override void onClose()
+        {
+            base.onClose();
+            stream.Flush();
+            stream.Dispose();
+            stream.Close();
+        }
+
+        public override void EnqueueInput(byte[] data)
+        {
+            List<byte> data_list = new List<byte>(data);
+            byte data_type = Struct.extractByte(data_list);
+            if (data_type == 0) //normal data
+            {
+                data = data_list.ToArray();
+                this.stream.Write(data, 0, data.Length);
+                Console.WriteLine(String.Format("Written to stream: {0}", data));
+            }
+            else dispatchControlMessage(data_list);
+        }
+
+        private void dispatchControlMessage(List<byte> msg)
+        {
+            /*
+             * This method is called from the input thread (not the processing thread), so time consuming or
+             * blocking tasks mustn't be run here
+             */
+            CH_MSG_TYPE ch_msg_type = (CH_MSG_TYPE) Struct.extractUInt32(msg);
+            switch (ch_msg_type)
+            {
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_STATE:
+                    Console.WriteLine(String.Format("Received STATE request for StreamChannel {0}", this.ID));
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_READ:
+                    int count = Struct.extractInt32(msg);
+                    int timeout = Struct.extractInt32(msg);
+                    Console.WriteLine(String.Format("Received READ request for StreamChannel {0}, count {1}, timeout {2}", this.ID, count, timeout));
+                    
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_FLUSH:
+                    Console.WriteLine(String.Format("Received FLUSH request for StreamChannel {0}", this.ID));
+                    stream.Flush();
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_CLOSE:
+                    Console.WriteLine(String.Format("Received CLOSE request for StreamChannel {0}", this.ID));
+                    this.shouldBeClosed = true; //no processing overhead
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_POSITION:
+                    Console.WriteLine(String.Format("Received POSITION request for StreamChannel {0}", this.ID));
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_LENGTH:
+                    Console.WriteLine(String.Format("Received LENGTH request for StreamChannel {0}", this.ID));
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_READ_TIMEOUT:
+                    Console.WriteLine(String.Format("Received READ_TIMEOUT request for StreamChannel {0}", this.ID));
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_WRITE_TIMEOUT:
+                    Console.WriteLine(String.Format("Received WRITE_TIMEOUT request for StreamChannel {0}", this.ID));
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_SEEK:
+                    int offset = Struct.extractInt32(msg);
+                    int origin = Struct.extractInt32(msg);
+                    Console.WriteLine(String.Format("Received SEEK request for StreamChannel {0}, count {1}, timeout {2}", this.ID, offset, origin));
+                    break;
+                default:
+                    Console.WriteLine(String.Format("Received unknown channel message for StreamChannel {0}", this.ID));
+                    break;
+            }
+        }
     }
 
     public class FileChannel : Channel
@@ -124,7 +239,7 @@ namespace P4wnP1
         private String filename = null;
         private FileStream fs;
 
-        public FileChannel(CallbackOutputProcessingNeeded onOutDirty, String filename, String accessMode, byte targetMode, bool force = false) : base(Encodings.BYTEARRAY, Types.BIDIRECTIONAL, onOutDirty)
+        public FileChannel(CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty, String filename, String accessMode, byte targetMode, bool force = false) : base(Encodings.BYTEARRAY, Types.BIDIRECTIONAL, onOutDirty, onChannelDirty)
         {
             this.requestedAccessMode = accessMode;
             this.targetMode = targetMode;
@@ -207,7 +322,7 @@ namespace P4wnP1
 
         
 
-        public ProcessChannel(Process process, Stream stream, Encodings encoding, Types type, CallbackOutputProcessingNeeded onOutDirty) : base(encoding, type, onOutDirty)
+        public ProcessChannel(Process process, Stream stream, Encodings encoding, Types type, CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty) : base(encoding, type, onOutDirty, onChannelDirty)
         {
             this.stream = stream;
             this.process = process;
@@ -233,6 +348,8 @@ namespace P4wnP1
             byte[] readBuf = new byte[READ_BUFFER_SIZE];
             List<byte> readbufCopy = new List<byte>();
 
+            
+
             while (!this.process.HasExited)
             {
                 //This could be a CPU consuming loop if much output is produced and couldn't be delivered fast enough
@@ -253,7 +370,8 @@ namespace P4wnP1
 
                 readbufCopy.Clear();
             }
-            if (this.callbacksExit != null) this.callbacksExit(this.process);
+            this.callbacksExit?.Invoke(this.process);
+            this.shouldBeClosed = true;
             
         }
 
@@ -340,30 +458,6 @@ namespace P4wnP1
             repackOutputIntoChunks(data);
             //Inform about needed output processing
             if (this.out_queue.Count > 0) this.onOutDirty();
-
-            /*
-            Monitor.Enter(this.lock_output);
-            // if there is already out data, we accumulate it to avoid creating multiple streams for a low number of bytes, each
-            if (this.out_queue.Count > 0)
-            {
-                while (this.out_queue.Count > 0)
-                {
-                    this.accumulation_out.AddRange((byte[])this.out_queue.Dequeue());
-                }
-                this.accumulation_out.AddRange(data);
-                byte[] acc = this.accumulation_out.ToArray();
-                //Console.WriteLine(String.Format("Accumulated: {0}", Encoding.UTF8.GetString(acc)));
-                base.write(acc);
-
-                this.accumulation_out.Clear();
-            }
-            else
-            {
-                //Console.WriteLine(String.Format("Not accumulated: {0}", Encoding.UTF8.GetString(data)));
-                base.write(data);
-            }
-            Monitor.Exit(this.lock_output);
-            */
         }
 
         

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -34,7 +35,9 @@ namespace P4wnP1
         private TransportLayer tl;
         private Hashtable pending_method_calls;
         private Object pendingMethodCallsLock;
-        
+
+        private Hashtable opened_streams;
+        private Object openedStreamsLock;
 
         private Hashtable pending_client_processes;
         private Object pendingClientProcessesLock;
@@ -59,10 +62,43 @@ namespace P4wnP1
             this.pending_method_calls = Hashtable.Synchronized(new Hashtable());
             this.pendingMethodCallsLock = new object();
 
+            this.opened_streams = Hashtable.Synchronized(new Hashtable());
+            this.openedStreamsLock = new object();
+
             this.running = true;
             this.eventDataNeedsToBeProcessed = new AutoResetEvent(true);
 
             this.tl.registerTimeoutCallback(this.linklayerTimeoutHandler);
+        }
+
+        private void addStream(Stream stream)
+        {
+            Monitor.Enter(this.openedStreamsLock);
+            this.opened_streams[stream.GetHashCode()] = stream;
+            Monitor.Exit(this.openedStreamsLock);
+        }
+
+        private Stream getStream(int stream_id)
+        {
+            Monitor.Enter(this.openedStreamsLock);
+            Stream res = (Stream) this.opened_streams[stream_id];
+            Monitor.Exit(this.openedStreamsLock);
+            return res;
+        }
+
+        private void removeStream(int stream_id)
+        {
+            Monitor.Enter(this.openedStreamsLock);
+            this.opened_streams.Remove(stream_id);
+            Monitor.Exit(this.openedStreamsLock);
+        }
+
+        private bool hasStream(int stream_id)
+        {
+            Monitor.Enter(this.openedStreamsLock);
+            bool res = this.opened_streams.Contains(stream_id);
+            Monitor.Exit(this.openedStreamsLock);
+            return res;
         }
 
         public void linklayerTimeoutHandler(long dt)
@@ -102,6 +138,11 @@ namespace P4wnP1
         {
             if (needed) this.eventDataNeedsToBeProcessed.Set();
             else this.eventDataNeedsToBeProcessed.Reset(); // this shouldn't be used, only the processing thread should be allowed to reset the signal
+        }
+
+        private void triggerProcessingNeeded()
+        {
+            this.eventDataNeedsToBeProcessed.Set();
         }
 
         private void addRequestedClientMethodToQueue(ClientMethod method)
@@ -214,6 +255,12 @@ namespace P4wnP1
                 //re-check if we are still running (eraly out)
                 if (!running) break;
 
+                /*
+                 * process transport layer channels (removing + heavy tasks)
+                 * weird callback ping pong, channel should reside to Client, not TransportLayer (same as server implementation)
+                 */
+
+                this.tl.ProcessChannels();
 
                 /*
                  * remove exited processes
@@ -223,6 +270,7 @@ namespace P4wnP1
                 {
                     Monitor.Enter(this.pendingClientProcessesLock);
                     this.pending_client_processes.Remove(cproc.Id);
+                    cproc.Dispose();
                     Monitor.Exit(this.pendingClientProcessesLock);
 
                     //ToDo: inform client about process removement
@@ -265,7 +313,7 @@ namespace P4wnP1
                                 }
                                 catch (Exception e)
                                 {
-                                    method.setError(String.Format("Method '{0}' found, but calling results in following exception:\n{1}", method.name, e.InnerException.Message));
+                                    method.setError(String.Format("'{0}' exception:\n{1}", method.name, e.InnerException.Message));
                                     Console.WriteLine("Catch block of Method invocation");
                                 }
                                 
@@ -376,7 +424,8 @@ namespace P4wnP1
             return Struct.packNullTerminatedString(String.Format("Channel with ID {0} set to 'hasLink'", ch_id)).ToArray();
         }
 
-        
+        /*
+        //REMOVE, obsolete
         private byte[] core_create_filechannel(byte[] args)
         {
             List<byte> request = new List<byte>(args);
@@ -395,7 +444,46 @@ namespace P4wnP1
             List<byte> response = Struct.packUInt32(fc.ID);
             return response.ToArray();
         }
+        */
+        
+        private byte[] core_fs_open_file(byte[] args)
+        {
+            List<byte> request = new List<byte>(args);
+            String filename = Struct.extractNullTerminatedString(request);
+            FileMode fm = (FileMode) Struct.extractByte(request);
+            FileAccess fa = (FileAccess) Struct.extractByte(request);
 
+            FileStream fs = File.Open(filename, fm, fa);
+
+            this.addStream(fs); //store this in global list of opened streams
+            int result = fs.GetHashCode(); //return stream id
+
+            //if we are here, channel creation succeded and we return the channel ID as response
+            List<byte> response = Struct.packInt32(result);
+            return response.ToArray();
+        }
+
+        private byte[] core_open_stream_channel(byte[] args)
+        {
+            List<byte> request = new List<byte>(args);
+            int stream_id = Struct.extractInt32(request);
+
+            // check if stream is present
+            bool exists = this.hasStream(stream_id);
+            if (!exists) throw new Exception(String.Format("Stream with ID '{0}' doesn't exist", stream_id));
+
+            // create stream channel
+            Stream stream = this.getStream(stream_id);
+            StreamChannel sc = new StreamChannel(stream, this.tl.setOutputProcessingNeeded, this.triggerProcessingNeeded);
+
+            //add stream channel to transport layer channels
+            this.tl.AddChannel(sc);
+
+            //return stream id
+            UInt32 result = sc.ID; 
+            List<byte> response = Struct.packUInt32(result);
+            return response.ToArray();
+        }
 
         private byte[] core_kill_proc(byte[] args)
         {
@@ -424,7 +512,7 @@ namespace P4wnP1
             string proc_filename = Struct.extractNullTerminatedString(data);
             string proc_args = Struct.extractNullTerminatedString(data);
 
-            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels, this.tl.setOutputProcessingNeeded); //starts the process already
+            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels, this.tl.setOutputProcessingNeeded, this.triggerProcessingNeeded); //starts the process already
             proc.registerOnExitCallback(this.onProcessExit);
 
             

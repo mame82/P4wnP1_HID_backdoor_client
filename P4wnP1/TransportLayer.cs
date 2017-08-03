@@ -10,6 +10,7 @@ namespace P4wnP1
         private LinkLayer ll;
         private Hashtable inChannels;
         private Hashtable outChannels;
+        private List<Channel> channelsToRemove;
         private Channel control_channel;
         //private UInt32 next_channel_id;
         private AutoResetEvent eventChannelOutputNeedsToBeProcessed;
@@ -23,7 +24,8 @@ namespace P4wnP1
             this.ll = linklayer;
             this.inChannels = Hashtable.Synchronized(new Hashtable());
             this.outChannels = Hashtable.Synchronized(new Hashtable());
-            this.control_channel = this.CreateAndAddChannel(Channel.Types.BIDIRECTIONAL, Channel.Encodings.BYTEARRAY, this.setOutputProcessingNeeded); //Caution, this has to be the first channel to be created, in order to assure channel ID is 0
+            this.channelsToRemove = new List<Channel>();
+            this.control_channel = this.CreateAndAddChannel(Channel.Types.BIDIRECTIONAL, Channel.Encodings.BYTEARRAY, this.setOutputProcessingNeeded, null); //Caution, this has to be the first channel to be created, in order to assure channel ID is 0
 
             this.running = true;
             
@@ -60,6 +62,42 @@ namespace P4wnP1
             this.ll.stop();
         }
 
+        //input and output of channels is processed in two dedicated Client threads
+        //if the channel needs to do time consuming operations, this could be done here (and thus by the
+        //processing thread of the client)
+        public void ProcessChannels()
+        {
+            //check for closed channels
+            Monitor.Enter(this.lockChannels);
+            ICollection keys = this.outChannels.Keys;
+            foreach (Object key in keys)
+            {
+                Channel channel = (Channel)this.outChannels[key];
+                if (channel.shouldBeClosed) this.channelsToRemove.Add(channel);
+                //processing for out channel in else branch
+            }
+            keys = this.inChannels.Keys;
+            foreach (Object key in keys)
+            {
+                Channel channel = (Channel)this.inChannels[key];
+                if (channel.shouldBeClosed) this.channelsToRemove.Add(channel);
+                //processing for in channel in else branch
+            }
+
+            //remove closed channels
+            foreach (Channel channel in this.channelsToRemove)
+            {
+                if (this.inChannels.Contains(channel.ID)) this.inChannels.Remove(channel.ID);
+                if (this.outChannels.Contains(channel.ID)) this.outChannels.Remove(channel.ID);
+                channel.onClose();
+            }
+
+            
+            Monitor.Exit(this.lockChannels);
+
+            
+        }
+
         public void ProcessOutSingle(bool blockIfNotthingToProcess)
         {
             if (blockIfNotthingToProcess)
@@ -76,6 +114,9 @@ namespace P4wnP1
 
             Monitor.Enter(this.lockChannels);
             ICollection keys = this.outChannels.Keys;
+
+            Console.WriteLine(String.Format("Out channel count {0}", keys.Count));
+
             foreach (Object key in keys)
             {
                 Channel channel = (Channel) this.outChannels[key];
@@ -159,9 +200,9 @@ namespace P4wnP1
         }
 
         
-        public Channel CreateAndAddChannel(Channel.Types type, Channel.Encodings encoding, Channel.CallbackOutputProcessingNeeded onOutDirty)
+        public Channel CreateAndAddChannel(Channel.Types type, Channel.Encodings encoding, Channel.CallbackOutputProcessingNeeded onOutDirty, Channel.CallbackChannelProcessingNeeded onChannelDirty)
         {
-            Channel ch = new Channel(encoding, type, onOutDirty);
+            Channel ch = new Channel(encoding, type, onOutDirty, onChannelDirty);
 
             this.AddChannel(ch);
             

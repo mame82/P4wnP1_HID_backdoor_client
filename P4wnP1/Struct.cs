@@ -16,6 +16,15 @@ namespace P4wnP1
             return BitConverter.ToUInt32(arr, 0); //retrun converted value
         }
 
+        public static Int32 extractInt32(List<byte> data)
+        {
+            byte[] arr = data.GetRange(0, 4).ToArray();
+            if (BitConverter.IsLittleEndian) Array.Reverse(arr); //convert from network order to little endian if necessary
+
+            data.RemoveRange(0, 4); //remove unneeded part from input data
+            return BitConverter.ToInt32(arr, 0); //retrun converted value
+        }
+
         public static byte extractByte(List<byte> data)
         {
             byte res = data.ElementAt(0);
@@ -41,6 +50,29 @@ namespace P4wnP1
             }
         }
 
+
+        public static List<byte> packInt32(Int32 val)
+        {
+            return packInt32(val, null);
+        }
+
+        public static List<byte> packInt32(Int32 val, List<byte> data)
+        {
+            byte[] arr = BitConverter.GetBytes(val);
+            if (BitConverter.IsLittleEndian) Array.Reverse(arr); //convert from  little endian to network order if necessary
+
+            List<byte> result = new List<byte>(arr);
+
+            if (data == null)
+            {
+                return result;
+            }
+            else
+            {
+                data.AddRange(result);
+                return data;
+            }
+        }
 
         public static List<byte> packUInt32(UInt32 val)
         {
