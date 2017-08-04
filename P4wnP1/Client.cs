@@ -21,6 +21,8 @@ namespace P4wnP1
         const UInt32 CTRL_MSG_FROM_CLIENT_RUN_METHOD = 6;// client tasks server to run a method
         const UInt32 CTRL_MSG_FROM_CLIENT_DESTROY_RESPONSE = 7;
         const UInt32 CTRL_MSG_FROM_CLIENT_PROCESS_EXITED = 8;
+        const UInt32 CTRL_MSG_FROM_CLIENT_CHANNEL_SHOULD_CLOSE = 9;
+        const UInt32 CTRL_MSG_FROM_CLIENT_CHANNEL_CLOSED = 10;
 
         // message types from server (python) to client (powershell)
         const UInt32 CTRL_MSG_FROM_SERVER_STAGE2_RESPONSE = 1000;
@@ -30,9 +32,18 @@ namespace P4wnP1
         const UInt32 CTRL_MSG_FROM_SERVER_ADD_CHANNEL_RESPONSE = 1004;
         const UInt32 CTRL_MSG_FROM_SERVER_RUN_METHOD_RESPONSE = 1005; // response from a method ran on server
         const UInt32 CTRL_MSG_FROM_SERVER_DESTROY = 1006;
+        const UInt32 CTRL_MSG_FROM_SERVER_CLOSE_CHANNEL = 1007;
 
 
         private TransportLayer tl;
+
+        private object lockChannels;
+        private Hashtable inChannels;
+        private Hashtable outChannels;
+        private List<Channel> channelsToRemove;
+        private Channel control_channel;
+        private AutoResetEvent eventChannelOutputNeedsToBeProcessed;
+
         private Hashtable pending_method_calls;
         private Object pendingMethodCallsLock;
 
@@ -53,15 +64,29 @@ namespace P4wnP1
         public Client(TransportLayer tl)
         {
             this.tl = tl;
+
+            //Channels
+            this.inChannels = Hashtable.Synchronized(new Hashtable());
+            this.outChannels = Hashtable.Synchronized(new Hashtable());
+            this.channelsToRemove = new List<Channel>();
+            this.lockChannels = new object();
+            this.eventChannelOutputNeedsToBeProcessed = new AutoResetEvent(true);
             
+            this.control_channel = new Channel(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL, this.callbackChannelOutputPresent, null); //Caution, this has to be the first channel to be created, in order to assure channel ID is 0
+            this.AddChannel(control_channel);
+
+
+            //Processes
             this.pending_client_processes = Hashtable.Synchronized(new Hashtable());
             this.pendingClientProcessesLock = new object();
             this.exitedProcesses = new List<ClientProcess>();
             this.exitedProcessesLock = new object();
 
+            //RPC methods
             this.pending_method_calls = Hashtable.Synchronized(new Hashtable());
             this.pendingMethodCallsLock = new object();
 
+            //Stream objects
             this.opened_streams = Hashtable.Synchronized(new Hashtable());
             this.openedStreamsLock = new object();
 
@@ -69,6 +94,39 @@ namespace P4wnP1
             this.eventDataNeedsToBeProcessed = new AutoResetEvent(true);
 
             this.tl.registerTimeoutCallback(this.linklayerTimeoutHandler);
+        }
+
+        public Channel AddChannel(Channel ch)
+        {
+            Monitor.Enter(this.lockChannels);
+            if (ch.type != Channel.Types.OUT) this.inChannels.Add(ch.ID, ch);
+            if (ch.type != Channel.Types.IN) this.outChannels.Add(ch.ID, ch);
+            Monitor.Exit(this.lockChannels);
+            return ch;
+        }
+
+        public Channel GetChannel(UInt32 id)
+        {
+            //get channel by ID, return null if not found
+            Monitor.Enter(this.lockChannels);
+            if (this.inChannels.Contains(id))
+            {
+                Monitor.Exit(this.lockChannels);
+                return (Channel)this.inChannels[id];
+            }
+            if (this.outChannels.Contains(id))
+            {
+                Monitor.Exit(this.lockChannels);
+                return (Channel)this.outChannels[id];
+            }
+            Monitor.Exit(this.lockChannels);
+
+            return null;
+        }
+
+        public void callbackChannelOutputPresent()
+        {
+            this.eventChannelOutputNeedsToBeProcessed.Set();
         }
 
         private void addStream(Stream stream)
@@ -131,7 +189,8 @@ namespace P4wnP1
             List<byte> msg = Struct.packUInt32(msg_type);
             if (data != null) msg = Struct.packByteArray(data, msg);
 
-            this.tl.WriteControlChannel(msg.ToArray());
+            
+            this.control_channel.write(msg.ToArray());
         }
 
         private void setProcessingNeeded(bool needed)
@@ -162,18 +221,38 @@ namespace P4wnP1
             Monitor.Exit(this.exitedProcessesLock);
         }
 
-        private void __processInput()
+        private void __processTransportLayerInput()
         {
             //For now only input of control channel has to be delivered
             // Input for ProcessChannels (STDIN) is directly written to the STDIN pipe of the process (when TransportLayer enqueues data)
 
-            Channel control_channel = this.tl.GetChannel(0);
+          
             while (this.running)
             {
-                this.tl.ProcessInSingle(true); // blocks if no input from transport layer
+                this.tl.waitForData();  // blocks if no input from transport layer
+                
+                /*
+                 * hand over data to respective channels
+                 */
+                while (this.tl.hasData()) //as long as linklayer has data
+                {
+                    List<byte> stream = new List<byte>(this.tl.readInputStream());
+                    UInt32 ch_id = Struct.extractUInt32(stream);
+
+                    byte[] data = stream.ToArray(); //the extract method removed the first elements from the List<byte> and we convert back to an array now
+
+                    Channel target_ch = this.GetChannel(ch_id);
+                    if (target_ch == null)
+                    {
+                        Console.WriteLine(String.Format("Received data for channel with ID {0}, this channel doesn't exist!", ch_id));
+                        continue;
+                    }
+
+                    target_ch.EnqueueInput(data);
+                }
 
                 /*
-                 * read and process control channel data
+                 * process control channel data
                  */
                 while (control_channel.hasPendingInData())
                 {
@@ -196,6 +275,12 @@ namespace P4wnP1
                             this.stop();
                             break;
 
+                        case CTRL_MSG_FROM_SERVER_CLOSE_CHANNEL:
+                            UInt32 channel_id = Struct.extractUInt32(data);
+                            Channel ch = this.GetChannel(channel_id);
+                            if (ch != null) ch.CloseRequestedForLocal = true;
+                            break;
+
                         default:
                             String data_utf8 = Encoding.UTF8.GetString(data.ToArray());
                             Console.WriteLine(String.Format("Received unknown MESSAGE TYPE for control channel! MessageType: {0}, Data: {1}", CtrlMessageType, data_utf8));
@@ -205,39 +290,66 @@ namespace P4wnP1
             }
         }
 
-        private void __processOutput()
+        private void __processTransportLayerOutput()
         {
             while (this.running)
             {
-                this.tl.ProcessOutSingle(true);
+                //stop processing until signal is received
+                while (true)
+                {
+                    if (this.eventChannelOutputNeedsToBeProcessed.WaitOne(100) || !this.running) break;
+                }
+                
+
+                //abort if we aren't in run state anymore
+                if (!this.running) return;
+
+                Monitor.Enter(this.lockChannels);
+                ICollection keys = this.outChannels.Keys;
+
+                Console.WriteLine(String.Format("Out channel count {0}", keys.Count));
+
+                foreach (Object key in keys)
+                {
+                    Channel channel = (Channel)this.outChannels[key];
+
+                    //while (channel.hasPendingOutData())
+                    if (channel.hasPendingOutData()) //we only process a single chunk per channel (load balancing) and we only deliver data if the channel is linked 
+                    {
+                        UInt32 ch_id = (UInt32)channel.ID;
+
+                        if ((ch_id == 0) || channel.isLinked) // send output only if channel is linked (P4wnP1 knows about it) or it is the control channel (id 0)
+                        {
+
+
+                            byte[] data = channel.DequeueOutput();
+
+                            List<byte> stream = Struct.packUInt32(ch_id);
+                            stream = Struct.packByteArray(data, stream);
+
+                            //Console.WriteLine("TransportLayer: trying to push channel data");
+
+                            if (ch_id == 0) this.tl.writeOutputStream(stream.ToArray(), false);
+                            else this.tl.writeOutputStream(stream.ToArray(), true);
+                        }
+                    }
+
+                    if (channel.hasPendingOutData()) this.eventChannelOutputNeedsToBeProcessed.Set(); //reenable event, if there's still data to process
+                }
+                Monitor.Exit(this.lockChannels);
             }
-        }
-
-        private void debugServerMethodTest()
-        {
-            //DEBUG test for method creation by client on server
-            List<byte> method_request = Struct.packUInt32(1); // method ID
-            method_request = Struct.packNullTerminatedString("test_method_call_from_client", method_request);
-            method_request = Struct.packByteArray(new byte[] { 0, 1, 2, 3 }, method_request);
-
-            this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_RUN_METHOD, method_request.ToArray());
-            //end DEBUG test for method creation by client on server
-
         }
 
         public void run()
         {
             
             List<UInt32> method_remove_list = new List<UInt32>();
-
-            // Delete this after testing
-            this.debugServerMethodTest();
-            
+           
             //start input thread
-            this.inputProcessingThread = new Thread(new ThreadStart(this.__processInput));
+            this.inputProcessingThread = new Thread(new ThreadStart(this.__processTransportLayerInput));
             this.inputProcessingThread.Start();
 
-            this.outputProcessingThread = new Thread(new ThreadStart(this.__processOutput));
+            this.outputProcessingThread = new Thread(new ThreadStart(this.__processTransportLayerOutput));
             this.outputProcessingThread.Start();
 
             
@@ -256,11 +368,50 @@ namespace P4wnP1
                 if (!running) break;
 
                 /*
-                 * process transport layer channels (removing + heavy tasks)
-                 * weird callback ping pong, channel should reside to Client, not TransportLayer (same as server implementation)
+                 * process  channels (removing + heavy tasks)
+                 * 
                  */
 
-                this.tl.ProcessChannels();
+                //check for closed channels
+                Monitor.Enter(this.lockChannels);
+                ICollection keys = this.outChannels.Keys;
+                foreach (Object key in keys)
+                {
+                    Channel channel = (Channel)this.outChannels[key];
+                    if (channel.shouldBeClosed && !channel.CloseRequestedForRemote)
+                    {
+                        this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_CHANNEL_SHOULD_CLOSE, Struct.packUInt32(channel.ID).ToArray());
+                        channel.CloseRequestedForRemote = true;
+                    }
+                    if (channel.CloseRequestedForLocal) this.channelsToRemove.Add(channel);
+                    //processing for out channel in else branch
+                }
+                keys = this.inChannels.Keys;
+                foreach (Object key in keys)
+                {
+                    Channel channel = (Channel)this.inChannels[key];
+                    if (channel.shouldBeClosed && !channel.CloseRequestedForRemote)
+                    {
+                        this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_CHANNEL_SHOULD_CLOSE, Struct.packUInt32(channel.ID).ToArray());
+                        channel.CloseRequestedForRemote = true;
+                    }
+                    if (channel.CloseRequestedForLocal) this.channelsToRemove.Add(channel);
+                    //processing for in channel in else branch
+                }
+
+                //remove closed channels
+                foreach (Channel channel in this.channelsToRemove)
+                {
+                    if (this.inChannels.Contains(channel.ID)) this.inChannels.Remove(channel.ID);
+                    if (this.outChannels.Contains(channel.ID)) this.outChannels.Remove(channel.ID);
+                    channel.onClose();
+                    this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_CHANNEL_CLOSED, Struct.packUInt32(channel.ID).ToArray());
+                }
+                channelsToRemove.Clear();
+
+                //if the channel itself needs processing (not input or output) do it here
+
+                Monitor.Exit(this.lockChannels);
 
                 /*
                  * remove exited processes
@@ -420,7 +571,7 @@ namespace P4wnP1
         private byte[] core_inform_channel_added(byte[] args)
         {
             UInt32 ch_id = Struct.extractUInt32(new List<byte>(args));
-            ((Channel)this.tl.GetChannel(ch_id)).isLinked = true;
+            ((Channel)this.GetChannel(ch_id)).isLinked = true;
             return Struct.packNullTerminatedString(String.Format("Channel with ID {0} set to 'hasLink'", ch_id)).ToArray();
         }
 
@@ -474,10 +625,10 @@ namespace P4wnP1
 
             // create stream channel
             Stream stream = this.getStream(stream_id);
-            StreamChannel sc = new StreamChannel(stream, this.tl.setOutputProcessingNeeded, this.triggerProcessingNeeded);
+            StreamChannel sc = new StreamChannel(stream, this.callbackChannelOutputPresent, this.triggerProcessingNeeded);
 
             //add stream channel to transport layer channels
-            this.tl.AddChannel(sc);
+            this.AddChannel(sc);
 
             //return stream id
             UInt32 result = sc.ID; 
@@ -512,15 +663,15 @@ namespace P4wnP1
             string proc_filename = Struct.extractNullTerminatedString(data);
             string proc_args = Struct.extractNullTerminatedString(data);
 
-            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels, this.tl.setOutputProcessingNeeded, this.triggerProcessingNeeded); //starts the process already
+            ClientProcess proc = new ClientProcess(proc_filename, proc_args, use_channels, this.callbackChannelOutputPresent, this.triggerProcessingNeeded); //starts the process already
             proc.registerOnExitCallback(this.onProcessExit);
 
             
             if (use_channels)
             {
-                this.tl.AddChannel(proc.Ch_stdin);
-                this.tl.AddChannel(proc.Ch_stdout);
-                this.tl.AddChannel(proc.Ch_stderr);
+                this.AddChannel(proc.Ch_stdin);
+                this.AddChannel(proc.Ch_stdout);
+                this.AddChannel(proc.Ch_stderr);
 
                 
                 /*

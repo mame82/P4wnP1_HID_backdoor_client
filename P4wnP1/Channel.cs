@@ -19,6 +19,10 @@ namespace P4wnP1
         public UInt32 ID { get; }
         private bool _isLinked;
         private bool _shouldBeClosed = false;
+        private bool _closeRequestedForRemote = false;
+        private bool _closeRequestedForLocal = false;
+        private bool _isClosed = false;
+
 
         public bool shouldBeClosed
         {
@@ -29,7 +33,6 @@ namespace P4wnP1
             set
             {
                 _shouldBeClosed = value;
-                // if this is an output channel, inform Callback listeners about the change, as processing could be needed
                 if (this._shouldBeClosed) this.onChannelDirty?.Invoke();
             }
         }
@@ -48,6 +51,33 @@ namespace P4wnP1
             }
         } //Channel is known on python side, if this isn't be true; data sent could be ignored by the other end
 
+        public bool CloseRequestedForRemote
+        {
+            get
+            {
+                return _closeRequestedForRemote;
+            }
+
+            set
+            {
+                _closeRequestedForRemote = value;
+            }
+        }
+
+        public bool CloseRequestedForLocal
+        {
+            get
+            {
+                return _closeRequestedForLocal;
+            }
+
+            set
+            {
+                _closeRequestedForLocal = value;
+                // if this is an output channel, inform Callback listeners about the change, as processing could be needed
+                if (this._closeRequestedForLocal) this.onChannelDirty?.Invoke();
+            }
+        }
 
         protected Queue in_queue = null;
         protected Queue out_queue = null;
@@ -131,13 +161,20 @@ namespace P4wnP1
 
         public virtual void onClose()
         {
-            
+            this._isClosed = true;
         }
     }
 
     public class StreamChannel : Channel
     {
         private Stream stream;
+
+        
+        bool passthrough;
+        int passthrough_limit;
+        private Thread thread_out = null;
+        private ManualResetEvent passtrough_limit_not_reached = null;
+        int outbuf_size = 0; //to monitor size of output queue in bytes
 
         private enum CH_MSG_TYPE
         {
@@ -149,20 +186,139 @@ namespace P4wnP1
             CHANNEL_CONTROL_REQUEST_LENGTH = 6,
             CHANNEL_CONTROL_REQUEST_READ_TIMEOUT = 7,
             CHANNEL_CONTROL_REQUEST_WRITE_TIMEOUT = 8,
-            CHANNEL_CONTROL_REQUEST_SEEK = 9
+            CHANNEL_CONTROL_REQUEST_SEEK = 9,
+
+            CHANNEL_CONTROL_INFORM_REMOTEBUFFER_LIMIT = 1001,
+            CHANNEL_CONTROL_INFORM_REMOTEBUFFER_SIZE = 1002
         }
 
-        public StreamChannel(Stream stream, CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty) : base(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL, onOutDirty, onChannelDirty)
+        public StreamChannel(Stream stream, CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty, bool passthrough = true, int passthrough_limit = 3000) : base(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL, onOutDirty, onChannelDirty)
         {
+            /*
+             * passtrough is a design decission, working like this:
+             *      - if the underlying Stream is readable, read operations are done continuous and automatically
+             *      - as reading could block, this is handle by a sperate thread
+             *      - data read is pushed directly to the channel output queue
+             *      - if the channel queue grows to passthroug_limit, this processed is paused until
+             *      the communication layer responsible for output data processing has dequeued enough
+             *      data, to shrink the queue below this limit
+             *      
+             *      In summary this means data is continueosly sent to the client, as long as it could be read
+             *      from the stream. Thus a readable StreamChannel puts load to theLinkLayer permanently (throttled
+             *      by the passthrough_limit). Additionally, this means if data isn't processed, buffer grow - this
+             *      happens on the other endpoint.
+             *      
+             *      A different approach would be to read data "on demand". This again would involve much more control
+             *      communication. With NetworkStreams in mind, this seems to be the better solution '(hopefully)
+             *      
+             * ToDo:
+             * - The channels onClose() method gets called by the client, if the channel is removed from the clients channel list.
+             *   Current implementation allows the channel to close the underlying stream object. This is somehow wrong and should be initiated
+             *   ba a request of the remote peer (close_stream_request). In order to allow the remote peer to send such a request, it
+             *   has to be aware of the fact that the channel has been closed. This isn't the case at the moment, as the peer doesn't get informed about this.
+             * - As there's no communication to the peer, when a channel gets closed, pending channel objects reside on the other endpoit when removed
+             *   from this peer.
+             * - as this isn't read on demand, a method has to be found to signal the remote peer if EOF is reached on reading. This could for example
+             *   be done by writing an empty stream to the channel output queue (empty payload, the byte signaling that this is data has to be included)
+             */
+
+
+
             this.stream = stream;
+            this.passthrough = passthrough;
+            this.passthrough_limit = passthrough_limit;
+
+            //if we have a readable stream and passtrough is enabled, we create a thread to passthrough data read
+            if (stream.CanRead && this.passthrough)
+            {
+                this.passtrough_limit_not_reached = new ManualResetEvent(true);
+                this.thread_out = new Thread(new ThreadStart(this.passThruOut));
+                thread_out.Start();
+            }
+            
+
+        }
+
+        public void passThruOut()
+        {
+            int READ_BUFFER_SIZE = this.passthrough_limit;
+            byte[] readBuf = new byte[READ_BUFFER_SIZE];
+            List<byte> readbufCopy = new List<byte>();
+
+
+            int count = -1;
+
+            while (!this.shouldBeClosed && this.stream.CanRead && count != 0)
+            {
+                this.passtrough_limit_not_reached.WaitOne();
+
+                count = this.stream.Read(readBuf, 0, readBuf.Length); //this doesn't block
+                
+                // trim data down to count
+                readbufCopy.AddRange(readBuf);
+                //readbufCopy.GetRange(0, count);
+                readbufCopy.RemoveRange(count, READ_BUFFER_SIZE - count);
+                
+                this.writeData(readbufCopy);
+
+                Console.WriteLine(String.Format("Data passed to StreamChannel out: {0}", Encoding.UTF8.GetString(readbufCopy.ToArray())));
+
+                readbufCopy.Clear();
+            }
+
+            //if end here, this means the last read has been with count==0, this indicates an EOF
+            //
+            //as the server receives this information (if read count==0 an empty stream is sent to the peer, which corresponds to an EOF)
+            //it is up to the server to decide to close the chanel
+
+        }
+
+        private void writeData(List<byte> data)
+        {
+            List<byte> new_data = Struct.packByte((byte)0);
+            new_data.AddRange(data);
+            this.outbuf_size += data.Count;
+            if (this.passthrough && (this.outbuf_size >= this.passthrough_limit)) this.passtrough_limit_not_reached.Reset();
+            base.write(new_data.ToArray());
+        }
+
+        public override byte[] DequeueOutput()
+        {
+            byte[] ret_data = base.DequeueOutput();
+            this.outbuf_size -= ret_data.Length;
+            if (this.passthrough && (this.outbuf_size < this.passthrough_limit)) this.passtrough_limit_not_reached.Set();
+            return ret_data;
+        }
+
+        private void writeControlMessage(List<byte> data)
+        {
+            List<byte> new_data = Struct.packByte((byte)1);
+            new_data.AddRange(data);
+            base.write(new_data.ToArray());
+        }
+
+        public override void write(byte[] data)
+        {
+            this.writeData(new List<byte>(data));
         }
 
         public override void onClose()
         {
             base.onClose();
-            stream.Flush();
-            stream.Dispose();
-            stream.Close();
+
+            if (this.thread_out != null) this.thread_out.Abort();
+
+            //ToDo: Stream closing shouldn't be handled here, as the stream is still referenced by he client
+            try
+            {
+                stream.Flush();
+                stream.Dispose();
+                stream.Close();
+            }
+            catch (ObjectDisposedException e)
+            {
+                Console.WriteLine("Stream has already been disposed when trying to flush");
+            }
         }
 
         public override void EnqueueInput(byte[] data)
@@ -225,78 +381,6 @@ namespace P4wnP1
                     Console.WriteLine(String.Format("Received unknown channel message for StreamChannel {0}", this.ID));
                     break;
             }
-        }
-    }
-
-    public class FileChannel : Channel
-    {
-        private static bool PROTECT_USER = true; //if true, user is protected from overwriting files accidently
-
-        private FileMode fileMode;
-        private FileAccess fileAccess;
-        private String requestedAccessMode = null;
-        private byte targetMode = 0;
-        private String filename = null;
-        private FileStream fs;
-
-        public FileChannel(CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty, String filename, String accessMode, byte targetMode, bool force = false) : base(Encodings.BYTEARRAY, Types.BIDIRECTIONAL, onOutDirty, onChannelDirty)
-        {
-            this.requestedAccessMode = accessMode;
-            this.targetMode = targetMode;
-            this.filename = filename;
-            
-
-            bool userProtect = FileChannel.PROTECT_USER && !force;
-            if (targetMode == 0)
-            {
-                //is targeting disc
-                this.fileAccess = FileChannel.translateToAccessMode(requestedAccessMode);
-                this.fileMode = FileChannel.translateToFileMode(requestedAccessMode, userProtect);
-
-                this.fs = File.Open(this.filename, this.fileMode, this.fileAccess); //Exceptions are catched by caller and delivered to remote server
-
-            }
-            else if(targetMode == 1)
-            {
-                //is targeting in-memory file transfer (write only)
-            }
-            else
-            {
-                //unsupported target mode
-            }
-        }
-
-        private static FileMode translateToFileMode(String accessMode, bool userProtect = true)
-        {
-            /*
-            FILEMODE_READ = "rb" --> Open
-            FILEMODE_WRITE = "wb" --> CreateNew (userProtect), Create (!userProtect)
-            FILEMODE_READWRITE = "r+b" --> Open (userProtect), OpenOrCreate (!userProtect)
-            FILEMODE_APPEND = "ab" --> Append
-            */
-            if (accessMode == "rb") return FileMode.Open;
-            else if (accessMode == "wb" && userProtect) return FileMode.CreateNew;
-            else if (accessMode == "wb" && !userProtect) return FileMode.Create;
-            else if (accessMode == "r+b" && userProtect) return FileMode.Open;
-            else if (accessMode == "r+b" && !userProtect) return FileMode.OpenOrCreate;
-            else if (accessMode == "ab") return FileMode.Append;
-            else throw new ArgumentException(String.Format("Unknown file access mode: '{0}'", accessMode));
-        }
-
-        private static FileAccess translateToAccessMode(String accessMode)
-        {
-            /*
-            FILEMODE_READ = "rb" --> READ
-            FILEMODE_WRITE = "wb" --> WRITE
-            FILEMODE_READWRITE = "r+b" --> READWRITE
-            FILEMODE_APPEND = "ab" --> WRITE
-            */
-            if (accessMode == "rb") return FileAccess.Read;
-            else if (accessMode == "wb") return FileAccess.Write;
-            else if (accessMode == "r+b") return FileAccess.ReadWrite;
-            else if (accessMode == "ab") return FileAccess.Write;
-            else throw new ArgumentException(String.Format("Unknown file access mode: '{0}'", accessMode));
-
         }
     }
 
