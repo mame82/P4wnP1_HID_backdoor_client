@@ -187,9 +187,14 @@ namespace P4wnP1
             CHANNEL_CONTROL_REQUEST_READ_TIMEOUT = 7,
             CHANNEL_CONTROL_REQUEST_WRITE_TIMEOUT = 8,
             CHANNEL_CONTROL_REQUEST_SEEK = 9,
+            CHANNEL_CONTROL_REQUEST_WRITE = 10,
 
             CHANNEL_CONTROL_INFORM_REMOTEBUFFER_LIMIT = 1001,
-            CHANNEL_CONTROL_INFORM_REMOTEBUFFER_SIZE = 1002
+            CHANNEL_CONTROL_INFORM_REMOTEBUFFER_SIZE = 1002,
+            CHANNEL_CONTROL_INFORM_WRITE_SUCCEEDED = 1003,
+            CHANNEL_CONTROL_INFORM_READ_SUCCEEDED = 1004,
+            CHANNEL_CONTROL_INFORM_WRITE_FAILED = 1005,
+            CHANNEL_CONTROL_INFORM_READ_FAILED = 1006
         }
 
         public StreamChannel(Stream stream, CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty, bool passthrough = true, int passthrough_limit = 3000) : base(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL, onOutDirty, onChannelDirty)
@@ -235,8 +240,8 @@ namespace P4wnP1
                 this.thread_out = new Thread(new ThreadStart(this.passThruOut));
                 thread_out.Start();
             }
-            
 
+            Console.WriteLine(String.Format("StreamChannel created {0}, passthrough: {1}", this.ID, passthrough));
         }
 
         public void passThruOut()
@@ -376,6 +381,19 @@ namespace P4wnP1
                     int offset = Struct.extractInt32(msg);
                     int origin = Struct.extractInt32(msg);
                     Console.WriteLine(String.Format("Received SEEK request for StreamChannel {0}, count {1}, timeout {2}", this.ID, offset, origin));
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_WRITE:
+                    int size = Struct.extractInt32(msg);
+                    byte[] data_to_write = msg.ToArray();
+
+                    //the data shouldn't be written from this thread, so the operation has to be moved to processing thread
+                    this.stream.Write(data_to_write, 0, data_to_write.Length);
+
+                    //return message, stating that everything has been written (should be handed by output thread)
+                    List<byte> write_response = Struct.packUInt32((UInt32) StreamChannel.CH_MSG_TYPE.CHANNEL_CONTROL_INFORM_WRITE_SUCCEEDED);
+                    write_response = Struct.packInt32(data_to_write.Length, write_response);
+                    this.writeControlMessage(write_response);
+
                     break;
                 default:
                     Console.WriteLine(String.Format("Received unknown channel message for StreamChannel {0}", this.ID));

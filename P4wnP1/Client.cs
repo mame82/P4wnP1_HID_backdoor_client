@@ -618,6 +618,9 @@ namespace P4wnP1
         {
             List<byte> request = new List<byte>(args);
             int stream_id = Struct.extractInt32(request);
+            byte passthrough_byte = Struct.extractByte(request);
+            bool passthrough = false;
+            if (passthrough_byte == 1) passthrough = true;
 
             // check if stream is present
             bool exists = this.hasStream(stream_id);
@@ -625,7 +628,7 @@ namespace P4wnP1
 
             // create stream channel
             Stream stream = this.getStream(stream_id);
-            StreamChannel sc = new StreamChannel(stream, this.callbackChannelOutputPresent, this.triggerProcessingNeeded);
+            StreamChannel sc = new StreamChannel(stream, this.callbackChannelOutputPresent, this.triggerProcessingNeeded, passthrough);
 
             //add stream channel to transport layer channels
             this.AddChannel(sc);

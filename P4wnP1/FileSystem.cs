@@ -52,7 +52,7 @@ namespace P4wnP1
 
         public static String[] ls(String dir)
         {
-            if ((dir == null) || (dir.Length == 0)) dir = ".";
+            if ((dir == null) || (dir.Length == 0)) dir = "./";
             try
             {
                 String[] rs = Directory.GetFileSystemEntries(dir);
