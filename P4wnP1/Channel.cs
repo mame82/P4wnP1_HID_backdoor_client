@@ -176,6 +176,8 @@ namespace P4wnP1
         private ManualResetEvent passtrough_limit_not_reached = null;
         int outbuf_size = 0; //to monitor size of output queue in bytes
 
+        byte[] readbuf = null;
+
         private enum CH_MSG_TYPE
         {
             CHANNEL_CONTROL_REQUEST_STATE = 1,
@@ -194,7 +196,9 @@ namespace P4wnP1
             CHANNEL_CONTROL_INFORM_WRITE_SUCCEEDED = 1003,
             CHANNEL_CONTROL_INFORM_READ_SUCCEEDED = 1004,
             CHANNEL_CONTROL_INFORM_WRITE_FAILED = 1005,
-            CHANNEL_CONTROL_INFORM_READ_FAILED = 1006
+            CHANNEL_CONTROL_INFORM_READ_FAILED = 1006,
+            CHANNEL_CONTROL_INFORM_FLUSH_SUCCEEDED = 1007,
+            CHANNEL_CONTROL_INFORM_FLUSH_FAILED = 1008
         }
 
         public StreamChannel(Stream stream, CallbackOutputProcessingNeeded onOutDirty, CallbackChannelProcessingNeeded onChannelDirty, bool passthrough = true, int passthrough_limit = 3000) : base(Channel.Encodings.BYTEARRAY, Channel.Types.BIDIRECTIONAL, onOutDirty, onChannelDirty)
@@ -239,6 +243,11 @@ namespace P4wnP1
                 this.passtrough_limit_not_reached = new ManualResetEvent(true);
                 this.thread_out = new Thread(new ThreadStart(this.passThruOut));
                 thread_out.Start();
+            }
+            else if (stream.CanRead && !this.passthrough)
+            {
+                // prepare read buffer
+                this.readbuf = new byte[60000];
             }
 
             Console.WriteLine(String.Format("StreamChannel created {0}, passthrough: {1}", this.ID, passthrough));
@@ -313,6 +322,7 @@ namespace P4wnP1
 
             if (this.thread_out != null) this.thread_out.Abort();
 
+            /*
             //ToDo: Stream closing shouldn't be handled here, as the stream is still referenced by he client
             try
             {
@@ -322,8 +332,9 @@ namespace P4wnP1
             }
             catch (ObjectDisposedException e)
             {
-                Console.WriteLine("Stream has already been disposed when trying to flush");
+                Console.WriteLine("Stream has already been disposed when trying to close");
             }
+            */
         }
 
         public override void EnqueueInput(byte[] data)
@@ -351,15 +362,14 @@ namespace P4wnP1
                 case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_STATE:
                     Console.WriteLine(String.Format("Received STATE request for StreamChannel {0}", this.ID));
                     break;
-                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_READ:
-                    int count = Struct.extractInt32(msg);
-                    int timeout = Struct.extractInt32(msg);
-                    Console.WriteLine(String.Format("Received READ request for StreamChannel {0}, count {1}, timeout {2}", this.ID, count, timeout));
-                    
-                    break;
                 case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_FLUSH:
                     Console.WriteLine(String.Format("Received FLUSH request for StreamChannel {0}", this.ID));
                     stream.Flush();
+
+                    //return message, stating that everything has been written (should be handed by output thread)
+                    List<byte> flush_response = Struct.packUInt32((UInt32)StreamChannel.CH_MSG_TYPE.CHANNEL_CONTROL_INFORM_FLUSH_SUCCEEDED);
+                    this.writeControlMessage(flush_response);
+
                     break;
                 case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_CLOSE:
                     Console.WriteLine(String.Format("Received CLOSE request for StreamChannel {0}", this.ID));
@@ -394,6 +404,26 @@ namespace P4wnP1
                     write_response = Struct.packInt32(data_to_write.Length, write_response);
                     this.writeControlMessage(write_response);
 
+                    break;
+                case CH_MSG_TYPE.CHANNEL_CONTROL_REQUEST_READ:
+                    int count = Struct.extractInt32(msg);
+                    int timeout = Struct.extractInt32(msg);
+
+                    Console.WriteLine(String.Format("Received READ request for StreamChannel {0}, count {1}, timeout {2}", this.ID, count, timeout));
+
+
+                    //the data shouldn't be readen from this thread, blocking would stop the input thread (has to be done from processing thread
+                    if (this.readbuf.Length < count) this.readbuf = new byte[count]; //resize read buffer if needed
+                    int read_size = this.stream.Read(this.readbuf, 0, count);
+                    List<Byte> read_data = new List<byte>(this.readbuf);
+                    read_data.RemoveRange(read_size, this.readbuf.Length - read_size);
+
+                    //return message, stating legngth of read data and the data itself (should be handed by output thread)
+                    List<byte> read_response = Struct.packUInt32((UInt32)StreamChannel.CH_MSG_TYPE.CHANNEL_CONTROL_INFORM_READ_SUCCEEDED);
+                    read_response = Struct.packInt32(read_size, read_response);
+                    read_response.AddRange(read_data);
+                    this.writeControlMessage(read_response);
+                    
                     break;
                 default:
                     Console.WriteLine(String.Format("Received unknown channel message for StreamChannel {0}", this.ID));

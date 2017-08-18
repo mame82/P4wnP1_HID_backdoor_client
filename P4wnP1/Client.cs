@@ -149,6 +149,7 @@ namespace P4wnP1
             Monitor.Enter(this.openedStreamsLock);
             this.opened_streams.Remove(stream_id);
             Monitor.Exit(this.openedStreamsLock);
+            Console.WriteLine(String.Format("Stream object with ID {0} removed.", stream_id));
         }
 
         private bool hasStream(int stream_id)
@@ -380,6 +381,7 @@ namespace P4wnP1
                     Channel channel = (Channel)this.outChannels[key];
                     if (channel.shouldBeClosed && !channel.CloseRequestedForRemote)
                     {
+                        Console.WriteLine(String.Format("OUT channel {0}, requesting close from server", channel.ID));
                         this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_CHANNEL_SHOULD_CLOSE, Struct.packUInt32(channel.ID).ToArray());
                         channel.CloseRequestedForRemote = true;
                     }
@@ -392,10 +394,15 @@ namespace P4wnP1
                     Channel channel = (Channel)this.inChannels[key];
                     if (channel.shouldBeClosed && !channel.CloseRequestedForRemote)
                     {
+                        Console.WriteLine(String.Format("IN channel {0}, requesting close from server", channel.ID));
                         this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_CHANNEL_SHOULD_CLOSE, Struct.packUInt32(channel.ID).ToArray());
                         channel.CloseRequestedForRemote = true;
                     }
-                    if (channel.CloseRequestedForLocal) this.channelsToRemove.Add(channel);
+                    if (channel.CloseRequestedForLocal)
+                    {
+                        //check if not already in remove list, because handled as outChannel 
+                        if (!this.channelsToRemove.Contains(channel)) this.channelsToRemove.Add(channel);
+                    }
                     //processing for in channel in else branch
                 }
 
@@ -405,6 +412,7 @@ namespace P4wnP1
                     if (this.inChannels.Contains(channel.ID)) this.inChannels.Remove(channel.ID);
                     if (this.outChannels.Contains(channel.ID)) this.outChannels.Remove(channel.ID);
                     channel.onClose();
+                    Console.WriteLine(String.Format("Channel {0} closed", channel.ID));
                     this.SendControlMessage(Client.CTRL_MSG_FROM_CLIENT_CHANNEL_CLOSED, Struct.packUInt32(channel.ID).ToArray());
                 }
                 channelsToRemove.Clear();
@@ -613,6 +621,29 @@ namespace P4wnP1
             List<byte> response = Struct.packInt32(result);
             return response.ToArray();
         }
+
+        private byte[] core_fs_close_stream(byte[] args)
+        {
+            List<byte> request = new List<byte>(args);
+            int stream_id = Struct.extractInt32(request);
+            
+            // check if stream is present
+            bool exists = this.hasStream(stream_id);
+            if (!exists) throw new Exception(String.Format("Stream with ID '{0}' doesn't exist", stream_id));
+
+            // close stream channel
+            Stream stream = this.getStream(stream_id);
+            stream.Dispose();
+            stream.Close();
+            Console.WriteLine(String.Format("Stream object with ID {0} closed.", stream_id));
+            this.removeStream(stream_id);
+            
+            //return stream id
+            Int32 result = stream_id;
+            List<byte> response = Struct.packInt32(result);
+            return response.ToArray();
+        }
+
 
         private byte[] core_open_stream_channel(byte[] args)
         {
